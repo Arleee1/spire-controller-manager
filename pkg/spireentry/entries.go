@@ -140,7 +140,7 @@ type templateData struct {
 	NodeSpec      *corev1.NodeSpec
 }
 
-func renderSPIFFEID(tmpl *template.Template, data *templateData, expectTD spiffeid.TrustDomain) (spiffeid.ID, error) {
+func renderSPIFFEID(tmpl *template.Template, data any, expectTD spiffeid.TrustDomain) (spiffeid.ID, error) {
 	rendered, err := renderTemplate(tmpl, data)
 	if err != nil {
 		return spiffeid.ID{}, err
@@ -207,7 +207,7 @@ func renderSelector(tmpl *template.Template, data *templateData) (spireapi.Selec
 	return selector, nil
 }
 
-func renderTemplate(tmpl *template.Template, data *templateData) (string, error) {
+func renderTemplate(tmpl *template.Template, data any) (string, error) {
 	buf := new(bytes.Buffer)
 	if err := tmpl.Execute(buf, data); err != nil {
 		return "", fmt.Errorf("failed to execute template: %w", err)

@@ -41,6 +41,14 @@ func ListClusterSPIFFEIDs(ctx context.Context, c client.Client) ([]spirev1alpha1
 	return list.Items, nil
 }
 
+func ListClusterServiceAccountSPIFFEIDs(ctx context.Context, c client.Client) ([]spirev1alpha1.ClusterServiceAccountSPIFFEID, error) {
+	var list spirev1alpha1.ClusterServiceAccountSPIFFEIDList
+	if err := c.List(ctx, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
 func ListClusterFederatedTrustDomains(ctx context.Context, c client.Client) ([]spirev1alpha1.ClusterFederatedTrustDomain, error) {
 	var list spirev1alpha1.ClusterFederatedTrustDomainList
 	if err := c.List(ctx, &list); err != nil {
@@ -70,6 +78,14 @@ func ListNamespacePods(ctx context.Context, c client.Client, namespace string, p
 	}
 	list := new(corev1.PodList)
 	if err := c.List(ctx, list, opts...); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func ListNamespaceServiceAccounts(ctx context.Context, c client.Client, namespace string, selector labels.Selector) ([]corev1.ServiceAccount, error) {
+	var list corev1.ServiceAccountList
+	if err := c.List(ctx, &list, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return nil, err
 	}
 	return list.Items, nil

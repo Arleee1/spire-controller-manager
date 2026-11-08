@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -36,6 +37,7 @@ import (
 	"google.golang.org/grpc/codes"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -107,6 +109,16 @@ type entryReconciler struct {
 func (r *entryReconciler) reconcile(ctx context.Context) {
 	log := log.FromContext(ctx)
 
+	var serviceAccountSPIFFEIDs []*ClusterServiceAccountSPIFFEID
+	if r.config.Reconcile.ClusterServiceAccountSPIFFEIDs {
+		var err error
+		serviceAccountSPIFFEIDs, err = r.listClusterServiceAccountSPIFFEIDs(ctx)
+		if err != nil {
+			log.Error(err, "Failed to list ClusterServiceAccountSPIFFEIDs")
+			return
+		}
+	}
+
 	if time.Now().After(r.nextGetUnsupportedFields) {
 		r.recalculateUnsupportFields(ctx, log)
 	}
@@ -116,6 +128,7 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 	currentEntries, deleteOnlyEntries, err := r.listEntries(ctx)
 	if err != nil {
 		log.Error(err, "Failed to list SPIRE entries")
+		r.failServiceAccountReconciliation(ctx, serviceAccountSPIFFEIDs, "SPIREAPIError", err)
 		return
 	}
 
@@ -131,6 +144,7 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 		clusterStaticEntries, err = r.listClusterStaticEntries(ctx)
 		if err != nil {
 			log.Error(err, "Failed to list ClusterStaticEntries")
+			r.failServiceAccountReconciliation(ctx, serviceAccountSPIFFEIDs, "KubernetesAPIError", err)
 			return
 		}
 		r.addClusterStaticEntryEntriesState(ctx, state, clusterStaticEntries)
@@ -142,9 +156,17 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 		clusterSPIFFEIDs, err = r.listClusterSPIFFEIDs(ctx)
 		if err != nil {
 			log.Error(err, "Failed to list ClusterSPIFFEIDs")
+			r.failServiceAccountReconciliation(ctx, serviceAccountSPIFFEIDs, "KubernetesAPIError", err)
 			return
 		}
 		r.addClusterSPIFFEIDEntriesState(ctx, state, clusterSPIFFEIDs)
+	}
+
+	if err := r.addClusterServiceAccountSPIFFEIDEntriesState(ctx, state, serviceAccountSPIFFEIDs); err != nil {
+		// Incomplete Kubernetes snapshots must not be interpreted as deletions.
+		log.Error(err, "Failed to collect service-account entries")
+		r.failServiceAccountReconciliation(ctx, serviceAccountSPIFFEIDs, "KubernetesAPIError", err)
+		return
 	}
 
 	var toDelete []spireapi.Entry
@@ -189,7 +211,11 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 
 	toDelete = append(toDelete, deleteOnlyEntries...)
 	if len(toDelete) > 0 {
-		r.deleteEntries(ctx, toDelete)
+		if err := r.deleteEntries(ctx, toDelete); err != nil {
+			for _, by := range serviceAccountSPIFFEIDs {
+				by.setCondition(metav1.ConditionFalse, "SPIREAPIError", err.Error())
+			}
+		}
 	}
 	if len(toCreate) > 0 {
 		r.createEntries(ctx, toCreate)
@@ -197,6 +223,8 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 	if len(toUpdate) > 0 {
 		r.updateEntries(ctx, toUpdate)
 	}
+
+	r.updateServiceAccountStatuses(ctx, serviceAccountSPIFFEIDs)
 
 	// Update the ClusterStaticEntry statuses
 	for _, clusterStaticEntry := range clusterStaticEntries {
@@ -270,6 +298,12 @@ func (r *entryReconciler) recalculateUnsupportFields(ctx context.Context, log lo
 }
 
 func (r *entryReconciler) shouldProcessOrDeleteEntryID(entry spireapi.Entry) (bool, bool) {
+	if strings.HasPrefix(entry.ID, r.config.EntryIDPrefix+serviceAccountEntryIDMarker) {
+		return r.config.Reconcile.ClusterServiceAccountSPIFFEIDs && strings.HasPrefix(entry.ID, r.serviceAccountEntryIDPrefix()), false
+	}
+	if r.config.Reconcile.ClusterServiceAccountSPIFFEIDs && !r.config.Reconcile.ClusterSPIFFEIDs && !r.config.Reconcile.ClusterStaticEntries {
+		return false, false
+	}
 	if r.config.EntryIDPrefix == "" {
 		return true, false
 	}
@@ -469,6 +503,9 @@ func (r *entryReconciler) renderPodEntry(ctx context.Context, spec *spirev1alpha
 func (r *entryReconciler) createEntries(ctx context.Context, declaredEntries []declaredEntry) {
 	log := log.FromContext(ctx)
 	statuses, err := r.config.EntryClient.CreateEntries(ctx, entriesFromDeclaredEntries(declaredEntries))
+	if err == nil && len(statuses) != len(declaredEntries) {
+		err = fmt.Errorf("expected %d create results, got %d", len(declaredEntries), len(statuses))
+	}
 	if err != nil {
 		for _, declaredEntry := range declaredEntries {
 			declaredEntry.By.IncrementEntryFailures()
@@ -491,6 +528,9 @@ func (r *entryReconciler) createEntries(ctx context.Context, declaredEntries []d
 func (r *entryReconciler) updateEntries(ctx context.Context, declaredEntries []declaredEntry) {
 	log := log.FromContext(ctx)
 	statuses, err := r.config.EntryClient.UpdateEntries(ctx, entriesFromDeclaredEntries(declaredEntries))
+	if err == nil && len(statuses) != len(declaredEntries) {
+		err = fmt.Errorf("expected %d update results, got %d", len(declaredEntries), len(statuses))
+	}
 	if err != nil {
 		for _, declaredEntry := range declaredEntries {
 			declaredEntry.By.IncrementEntryFailures()
@@ -509,21 +549,27 @@ func (r *entryReconciler) updateEntries(ctx context.Context, declaredEntries []d
 	}
 }
 
-func (r *entryReconciler) deleteEntries(ctx context.Context, entries []spireapi.Entry) {
+func (r *entryReconciler) deleteEntries(ctx context.Context, entries []spireapi.Entry) error {
 	log := log.FromContext(ctx)
 	statuses, err := r.config.EntryClient.DeleteEntries(ctx, idsFromEntries(entries))
+	if err == nil && len(statuses) != len(entries) {
+		err = fmt.Errorf("expected %d delete results, got %d", len(entries), len(statuses))
+	}
 	if err != nil {
 		log.Error(err, "Failed to delete entries")
-		return
+		return err
 	}
+	var failures []error
 	for i, status := range statuses {
 		switch status.Code {
 		case codes.OK:
 			log.Info("Deleted entry", entryLogFields(entries[i])...)
 		default:
+			failures = append(failures, fmt.Errorf("failed to delete entry %s: %w", entries[i].ID, status.Err()))
 			log.Error(status.Err(), "Failed to delete entry", entryLogFields(entries[i])...)
 		}
 	}
+	return errors.Join(failures...)
 }
 
 type entriesState map[entryKey]*entryState

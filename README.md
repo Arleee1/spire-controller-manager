@@ -18,6 +18,14 @@ The [ClusterSPIFFEID](docs/clusterspiffeid-crd.md) resource is a cluster scoped
 CRD that describes the shape of the identity that is applied to workloads, as
 well as selectors that describe which workloads the identity applies to.
 
+#### ClusterServiceAccountSPIFFEID (opt-in)
+
+The [ClusterServiceAccountSPIFFEID](docs/clusterserviceaccountspiffeid-crd.md)
+resource declares templated identities for namespace/service-account pairs,
+including accounts without running Pods. It uses only `k8s:ns` and `k8s:sa`
+selectors. Its controller watches namespaces and service accounts rather than
+Pods or Nodes, and is disabled by default.
+
 #### ClusterFederatedTrustDomain
 
 The [ClusterFederatedTrustDomain](docs/clusterfederatedtrustdomain-crd.md)
@@ -49,6 +57,12 @@ the existing Pods and ClusterSPIFFEID resources which apply to those pods, as
 well as static entries declared via ClusterStaticEntry resources. The
 reconciliation process creates, updates, and deletes entries on SPIRE server as
 appropriate to match the declared state.
+
+When enabled, ClusterServiceAccountSPIFFEID, Namespace and ServiceAccount
+changes also trigger this same shared reconciliation process. Disabling
+`reconcile.clusterSPIFFEIDs` prevents the legacy Pod and Endpoints controllers
+from starting. The service-account path does not list, get or watch Pods, Nodes
+or Endpoints. Static entries can remain enabled for SPIRE bootstrap identities.
 
 #### Federation
 

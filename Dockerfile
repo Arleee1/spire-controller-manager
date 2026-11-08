@@ -2,6 +2,8 @@ ARG goversion
 
 # Build the manager binary
 FROM --platform=${BUILDPLATFORM} golang:${goversion}-alpine AS base
+ARG GOMAXPROCS
+ARG GOFLAGS
 WORKDIR /workspace
 # Copy the Go Modules manifests
 COPY go.* ./

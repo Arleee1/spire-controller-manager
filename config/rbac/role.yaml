@@ -8,30 +8,10 @@ rules:
   - ""
   resources:
   - endpoints
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
   - namespaces
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
   - nodes
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
   - pods
+  - serviceaccounts
   verbs:
   - get
   - list
@@ -49,57 +29,7 @@ rules:
   - spire.spiffe.io
   resources:
   - clusterfederatedtrustdomains
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - spire.spiffe.io
-  resources:
-  - clusterfederatedtrustdomains/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - spire.spiffe.io
-  resources:
-  - clusterfederatedtrustdomains/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - spire.spiffe.io
-  resources:
   - clusterspiffeids
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - spire.spiffe.io
-  resources:
-  - clusterspiffeids/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - spire.spiffe.io
-  resources:
-  - clusterspiffeids/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - spire.spiffe.io
-  resources:
   - clusterstaticentries
   verbs:
   - create
@@ -112,14 +42,27 @@ rules:
 - apiGroups:
   - spire.spiffe.io
   resources:
+  - clusterfederatedtrustdomains/finalizers
+  - clusterspiffeids/finalizers
   - clusterstaticentries/finalizers
   verbs:
   - update
 - apiGroups:
   - spire.spiffe.io
   resources:
+  - clusterfederatedtrustdomains/status
+  - clusterserviceaccountspiffeids/status
+  - clusterspiffeids/status
   - clusterstaticentries/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - spire.spiffe.io
+  resources:
+  - clusterserviceaccountspiffeids
+  verbs:
+  - get
+  - list
+  - watch

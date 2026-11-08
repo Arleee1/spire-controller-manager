@@ -129,7 +129,8 @@ type ControllerManagerConfigurationSpec struct {
 	// +optional
 	ParentIDTemplate string `json:"parentIDTemplate,omitempty"`
 
-	// If specified, only syncs the specified CR types. Defaults to all.
+	// If specified, only syncs the specified CR types. Defaults to the legacy
+	// controllers; ClusterServiceAccountSPIFFEID reconciliation is opt-in.
 	// +optional
 	Reconcile *ReconcileConfig `json:"reconcile,omitempty"`
 
@@ -152,6 +153,11 @@ type ReconcileConfig struct {
 	// ClusterSpiffeIds enable syncing of clusterspiffeids
 	// +optional
 	ClusterSPIFFEIDs bool `json:"clusterSPIFFEIDs,omitempty"`
+
+	// ClusterServiceAccountSPIFFEIDs enables namespace/service-account identities.
+	// Disabled by default. Not supported with staticManifestPath.
+	// +optional
+	ClusterServiceAccountSPIFFEIDs bool `json:"clusterServiceAccountSPIFFEIDs,omitempty"`
 
 	// ClusterFederatedTrustDomains enable syncing of clusterfederatedtrustdomains
 	// +optional

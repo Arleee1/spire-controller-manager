@@ -22,10 +22,43 @@ the following fields are defined:
 
 ## Kubernetes Mode
 
-By default, all objects are synced from the Kubernetes cluster the spire-controller-manager is running in.
+By default, the legacy ClusterSPIFFEID, ClusterStaticEntry and
+ClusterFederatedTrustDomain controllers are enabled. The
+[ClusterServiceAccountSPIFFEID](clusterserviceaccountspiffeid-crd.md) controller
+is explicitly opt-in and disabled by default.
+
+The optional `reconcile` object selects controllers. If present, omitted flags
+are false, including when the object is empty:
+
+```yaml
+reconcile:
+  clusterSPIFFEIDs: false
+  clusterServiceAccountSPIFFEIDs: true
+  clusterStaticEntries: true
+  clusterFederatedTrustDomains: false
+```
+
+With this configuration, workload registration uses Namespace and ServiceAccount
+objects only. No Pod, Node or Endpoints informer is started. Static bootstrap
+entries and service-account entries share one reconciliation store.
+
+Use an exclusive `entryIDPrefix` when more than one manager shares a SPIRE
+server. Legacy and static reconciliation retains its existing ownership of
+all entries in that configured prefix. The new controller also scopes its
+registration IDs to the trust domain, cluster name and controller class.
+The global `parentIDTemplate` still applies only to legacy Pod entries; each
+ClusterServiceAccountSPIFFEID supplies its own required parent template.
+
+See [the service-account manager configuration](../examples/service-account-controller.yaml).
+ControllerManagerConfig is loaded from a local configuration file, not from
+the historical ControllerManagerConfig Kubernetes CRD.
 
 ## Static Mode
 
 If `staticManifestPath` is specified, Kubernetes will not be used and instead, manifests are loaded from yaml files located in the specified path and synchronized to the SPIRE server.
 
 In this mode, validating webhooks will be ignored as its not useful without Kubernetes.
+
+ClusterServiceAccountSPIFFEID reconciliation is not supported in static mode
+because it requires live Namespace and ServiceAccount objects. Enabling it with
+`staticManifestPath` is a configuration error.

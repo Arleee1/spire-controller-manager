@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/spire.spiffe.io_clusterspiffeids.yaml
+- bases/spire.spiffe.io_clusterserviceaccountspiffeids.yaml
 - bases/spire.spiffe.io_clusterfederatedtrustdomains.yaml
 - bases/spire.spiffe.io_controllermanagerconfigs.yaml
 - bases/spire.spiffe.io_clusterstaticentries.yaml

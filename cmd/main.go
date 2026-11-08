@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"flag"
@@ -217,6 +218,9 @@ func parseConfig() (Config, error) {
 		if retval.reconcile.ClusterSPIFFEIDs {
 			return retval, fmt.Errorf("ClusterSPIFFEID reconciliation is not possible with static manifests")
 		}
+		if retval.reconcile.ClusterServiceAccountSPIFFEIDs {
+			return retval, fmt.Errorf("ClusterServiceAccountSPIFFEID reconciliation is not possible with static manifests")
+		}
 	}
 
 	retval.ctrlConfig.EntryIDPrefix = addDotSuffix(retval.ctrlConfig.EntryIDPrefix)
@@ -240,6 +244,7 @@ func parseConfig() (Config, error) {
 		"class name", retval.ctrlConfig.ClassName,
 		"handle crs without class name", retval.ctrlConfig.WatchClassless,
 		"reconcile ClusterSPIFFEIDs", retval.reconcile.ClusterSPIFFEIDs,
+		"reconcile ClusterServiceAccountSPIFFEIDs", retval.reconcile.ClusterServiceAccountSPIFFEIDs,
 		"reconcile ClusterFederatedTrustDomains", retval.reconcile.ClusterFederatedTrustDomains,
 		"reconcile ClusterStaticEntries", retval.reconcile.ClusterStaticEntries,
 		"entryIDPrefix", retval.ctrlConfig.EntryIDPrefix,
@@ -346,7 +351,7 @@ func run(mainConfig Config) (err error) {
 	}
 
 	var entryReconciler reconciler.Reconciler
-	if mainConfig.reconcile.ClusterSPIFFEIDs || mainConfig.reconcile.ClusterStaticEntries {
+	if mainConfig.reconcile.ClusterSPIFFEIDs || mainConfig.reconcile.ClusterServiceAccountSPIFFEIDs || mainConfig.reconcile.ClusterStaticEntries {
 		entryReconciler = spireentry.Reconciler(spireentry.ReconcilerConfig{
 			TrustDomain:          trustDomain,
 			ClusterName:          mainConfig.ctrlConfig.ClusterName,
@@ -383,25 +388,9 @@ func run(mainConfig Config) (err error) {
 		}
 	}
 
-	if mainConfig.reconcile.ClusterSPIFFEIDs {
-		if err = (&controller.ClusterSPIFFEIDReconciler{
-			Client:    mgr.GetClient(),
-			Scheme:    mgr.GetScheme(),
-			Triggerer: entryReconciler,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ClusterSPIFFEID")
-			return err
-		}
-	}
-	if mainConfig.reconcile.ClusterStaticEntries {
-		if err = (&controller.ClusterStaticEntryReconciler{
-			Client:    mgr.GetClient(),
-			Scheme:    mgr.GetScheme(),
-			Triggerer: entryReconciler,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ClusterStaticEntry")
-			return err
-		}
+	if err := setupEntryControllers(ctx, mgr, mainConfig, entryReconciler); err != nil {
+		setupLog.Error(err, "unable to create entry controllers")
+		return err
 	}
 	if webhookEnabled {
 		if err = (&spirev1alpha1.ClusterFederatedTrustDomain{}).SetupWebhookWithManager(mgr); err != nil {
@@ -414,27 +403,6 @@ func run(mainConfig Config) (err error) {
 		}
 	}
 	//+kubebuilder:scaffold:builder
-
-	if mainConfig.reconcile.ClusterSPIFFEIDs {
-		if err = (&controller.PodReconciler{
-			Client:           mgr.GetClient(),
-			Scheme:           mgr.GetScheme(),
-			Triggerer:        entryReconciler,
-			IgnoreNamespaces: mainConfig.ignoreNamespacesRegex,
-		}).SetupWithManager(ctx, mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "Pod")
-			return err
-		}
-		if err = (&controller.EndpointsReconciler{
-			Client:           mgr.GetClient(),
-			Scheme:           mgr.GetScheme(),
-			Triggerer:        entryReconciler,
-			IgnoreNamespaces: mainConfig.ignoreNamespacesRegex,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "Endpoints")
-			return err
-		}
-	}
 
 	if entryReconciler != nil {
 		if err = mgr.Add(manager.RunnableFunc(entryReconciler.Run)); err != nil {
@@ -471,6 +439,43 @@ func run(mainConfig Config) (err error) {
 		return err
 	}
 
+	return nil
+}
+
+func setupEntryControllers(ctx context.Context, mgr ctrl.Manager, mainConfig Config, triggerer reconciler.Triggerer) error {
+	if mainConfig.reconcile.ClusterSPIFFEIDs {
+		if err := (&controller.ClusterSPIFFEIDReconciler{
+			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Triggerer: triggerer,
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("ClusterSPIFFEID controller: %w", err)
+		}
+		if err := (&controller.PodReconciler{
+			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Triggerer: triggerer,
+			IgnoreNamespaces: mainConfig.ignoreNamespacesRegex,
+		}).SetupWithManager(ctx, mgr); err != nil {
+			return fmt.Errorf("Pod controller: %w", err)
+		}
+		if err := (&controller.EndpointsReconciler{
+			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Triggerer: triggerer,
+			IgnoreNamespaces: mainConfig.ignoreNamespacesRegex,
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("Endpoints controller: %w", err)
+		}
+	}
+	if mainConfig.reconcile.ClusterServiceAccountSPIFFEIDs {
+		if err := (&controller.ClusterServiceAccountSPIFFEIDReconciler{
+			Triggerer: triggerer,
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("ClusterServiceAccountSPIFFEID controller: %w", err)
+		}
+	}
+	if mainConfig.reconcile.ClusterStaticEntries {
+		if err := (&controller.ClusterStaticEntryReconciler{
+			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Triggerer: triggerer,
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("ClusterStaticEntry controller: %w", err)
+		}
+	}
 	return nil
 }
 
