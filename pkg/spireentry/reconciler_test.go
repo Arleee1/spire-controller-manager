@@ -45,6 +45,22 @@ func TestMakeEntryKey(t *testing.T) {
 		require.NotEqual(t, makeEntryKey(a), makeEntryKey(b))
 	})
 
+	t.Run("selector field boundaries are unambiguous", func(t *testing.T) {
+		a := spireapi.Entry{ParentID: id1, SPIFFEID: id2, Selectors: []spireapi.Selector{{Type: "a", Value: "bc"}}}
+		b := spireapi.Entry{ParentID: id1, SPIFFEID: id2, Selectors: []spireapi.Selector{{Type: "ab", Value: "c"}}}
+		require.NotEqual(t, makeEntryKey(a), makeEntryKey(b))
+		state := make(entriesState)
+		state.AddCurrent(a)
+		state.AddCurrent(b)
+		require.Len(t, state, 2)
+	})
+
+	t.Run("selector list boundaries are unambiguous", func(t *testing.T) {
+		a := spireapi.Entry{ParentID: id1, SPIFFEID: id2, Selectors: []spireapi.Selector{{Type: "a", Value: "bcd"}}}
+		b := spireapi.Entry{ParentID: id1, SPIFFEID: id2, Selectors: []spireapi.Selector{{Type: "a", Value: "b"}, {Type: "c", Value: "d"}}}
+		require.NotEqual(t, makeEntryKey(a), makeEntryKey(b))
+	})
+
 	t.Run("TTL has no impact", func(t *testing.T) {
 		a := spireapi.Entry{ID: "A", ParentID: id1, SPIFFEID: id2, Selectors: sAABB, X509SVIDTTL: 1}
 		b := spireapi.Entry{ID: "B", ParentID: id1, SPIFFEID: id2, Selectors: sAABB, X509SVIDTTL: 2}

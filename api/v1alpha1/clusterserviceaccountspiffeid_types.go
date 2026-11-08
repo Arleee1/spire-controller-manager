@@ -24,6 +24,16 @@ type ClusterServiceAccountSPIFFEIDSpec struct {
 	// It has the same template context as SPIFFEIDTemplate; Pod and Node fields are not available.
 	// +kubebuilder:validation:MinLength=1
 	ParentIDTemplate string `json:"parentIDTemplate"`
+
+	// WorkloadSelectorTemplates renders the complete SPIRE selector set using the
+	// same context as SPIFFEIDTemplate. No selectors are implicitly appended.
+	// If omitted, the selectors remain k8s:ns:<namespace> and k8s:sa:<service-account>.
+	// An explicitly empty list is invalid.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:MinLength=1
+	// +listType=atomic
+	WorkloadSelectorTemplates *[]string `json:"workloadSelectorTemplates,omitempty"`
 }
 
 // ClusterServiceAccountSPIFFEIDStatus reports the last shared entry reconciliation.

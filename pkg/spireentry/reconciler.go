@@ -22,7 +22,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"slices"
 	"sort"
@@ -611,11 +610,14 @@ type entryKey string
 
 func makeEntryKey(entry spireapi.Entry) entryKey {
 	h := sha256.New()
-	_, _ = io.WriteString(h, entry.SPIFFEID.String())
-	_, _ = io.WriteString(h, entry.ParentID.String())
+	writeField := func(value string) {
+		_, _ = fmt.Fprintf(h, "%d:%s", len(value), value)
+	}
+	writeField(entry.SPIFFEID.String())
+	writeField(entry.ParentID.String())
 	for _, selector := range sortSelectors(entry.Selectors) {
-		_, _ = io.WriteString(h, selector.Type)
-		_, _ = io.WriteString(h, selector.Value)
+		writeField(selector.Type)
+		writeField(selector.Value)
 	}
 	sum := h.Sum(nil)
 	return entryKey(hex.EncodeToString(sum))

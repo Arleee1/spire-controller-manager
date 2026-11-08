@@ -22,9 +22,10 @@ well as selectors that describe which workloads the identity applies to.
 
 The [ClusterServiceAccountSPIFFEID](docs/clusterserviceaccountspiffeid-crd.md)
 resource declares templated identities for namespace/service-account pairs,
-including accounts without running Pods. It uses only `k8s:ns` and `k8s:sa`
-selectors. Its controller watches namespaces and service accounts rather than
-Pods or Nodes, and is disabled by default.
+including accounts without running Pods. It defaults to `k8s:ns` and `k8s:sa`
+selectors. Optional `workloadSelectorTemplates` replaces that entire selector
+set without injecting a Pod UID. Its controller still watches only namespaces
+and service accounts, not Pods or Nodes, and is disabled by default.
 
 #### ClusterFederatedTrustDomain
 

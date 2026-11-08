@@ -195,7 +195,7 @@ func dnsNamesFromEndpoints(endpointsList *corev1.EndpointsList, clusterDomain st
 	return dnsNames
 }
 
-func renderSelector(tmpl *template.Template, data *templateData) (spireapi.Selector, error) {
+func renderSelector(tmpl *template.Template, data any) (spireapi.Selector, error) {
 	rendered, err := renderTemplate(tmpl, data)
 	if err != nil {
 		return spireapi.Selector{}, err

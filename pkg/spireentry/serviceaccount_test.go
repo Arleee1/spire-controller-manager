@@ -71,39 +71,67 @@ func TestServiceAccountEntryRendering(t *testing.T) {
 }
 
 func TestServiceAccountEntryCountIsIndependentOfPods(t *testing.T) {
-	for _, podCount := range []int{0, 1, 1000} {
-		t.Run(fmt.Sprint(podCount), func(t *testing.T) {
-			objects := []client.Object{
-				serviceAccountRule("identities"), serviceAccountNamespace("team", true),
-				serviceAccount("team", "app"), serviceAccount("team", "idle"),
-				serviceAccountNamespace("not-enrolled", false), serviceAccount("not-enrolled", "app"),
-			}
-			for i := range podCount {
-				objects = append(objects, &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("pod-%d", i), Namespace: "team", UID: types.UID(fmt.Sprint(i))},
-					Spec:       corev1.PodSpec{ServiceAccountName: "app", NodeName: "unused"},
+	for _, tt := range []struct {
+		name      string
+		templates *[]string
+	}{
+		{name: "omitted"},
+		{name: "explicit ns and sa", templates: &[]string{"k8s:ns:{{ .NamespaceMeta.Name }}", "k8s:sa:{{ .ServiceAccountMeta.Name }}"}},
+		{name: "arbitrary selector", templates: &[]string{"custom:role:{{ .ServiceAccountMeta.Name }}"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, podCount := range []int{0, 1, 1000} {
+				t.Run(fmt.Sprint(podCount), func(t *testing.T) {
+					rule := serviceAccountRule("identities")
+					rule.Spec.WorkloadSelectorTemplates = tt.templates
+					objects := []client.Object{
+						rule, serviceAccountNamespace("team", true),
+						serviceAccount("team", "app"), serviceAccount("team", "idle"),
+						serviceAccountNamespace("not-enrolled", false), serviceAccount("not-enrolled", "app"),
+					}
+					for i := range podCount {
+						objects = append(objects, &corev1.Pod{
+							ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("pod-%d", i), Namespace: "team", UID: types.UID(fmt.Sprint(i))},
+							Spec:       corev1.PodSpec{ServiceAccountName: "app", NodeName: "unused"},
+						})
+					}
+					r, k8s, store := newServiceAccountTestReconciler(t, objects...)
+					r.reconcile(context.Background())
+					require.Len(t, store.entries, 2)
+					require.Equal(t, 1, k8s.lists["*v1.NamespaceList"])
+					require.Equal(t, 1, k8s.lists["*v1.ServiceAccountList"])
+					require.Zero(t, k8s.lists["*v1.PodList"])
+					require.Zero(t, k8s.lists["*v1.NodeList"])
+					require.Zero(t, k8s.lists["*v1.EndpointsList"])
+					require.Empty(t, k8s.gets)
+					status := serviceAccountStatus(t, k8s, "identities")
+					require.Equal(t, 2, status.Stats.ServiceAccountsSelected)
+					require.Equal(t, 2, status.Stats.EntriesToSet)
+					require.Equal(t, metav1.ConditionTrue, meta.FindStatusCondition(status.Conditions, "Ready").Status)
 				})
 			}
-			r, k8s, store := newServiceAccountTestReconciler(t, objects...)
-			r.reconcile(context.Background())
-			require.Len(t, store.entries, 2)
-			require.Equal(t, 1, k8s.lists["*v1.NamespaceList"])
-			require.Equal(t, 1, k8s.lists["*v1.ServiceAccountList"])
-			require.Zero(t, k8s.lists["*v1.PodList"])
-			require.Zero(t, k8s.lists["*v1.NodeList"])
-			require.Zero(t, k8s.lists["*v1.EndpointsList"])
-			require.Empty(t, k8s.gets)
-			status := serviceAccountStatus(t, k8s, "identities")
-			require.Equal(t, 2, status.Stats.ServiceAccountsSelected)
-			require.Equal(t, 2, status.Stats.EntriesToSet)
-			require.Equal(t, metav1.ConditionTrue, meta.FindStatusCondition(status.Conditions, "Ready").Status)
 		})
 	}
 }
 
 func TestServiceAccountLifecyclePreservesStaticEntries(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		templates *[]string
+	}{
+		{name: "omitted"},
+		{name: "explicit ns and sa", templates: &[]string{"k8s:ns:{{ .NamespaceMeta.Name }}", "k8s:sa:{{ .ServiceAccountMeta.Name }}"}},
+		{name: "additional selector", templates: &[]string{"k8s:ns:{{ .NamespaceMeta.Name }}", "k8s:sa:{{ .ServiceAccountMeta.Name }}", "custom:role:application"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) { testServiceAccountLifecycle(t, tt.templates) })
+	}
+}
+
+func testServiceAccountLifecycle(t *testing.T, templates *[]string) {
+	t.Helper()
 	ctx := context.Background()
 	rule := serviceAccountRule("identities")
+	rule.Spec.WorkloadSelectorTemplates = templates
 	ns := serviceAccountNamespace("team", true)
 	objects := []client.Object{rule, ns, serviceAccount("team", "app"), serviceAccount("team", "idle")}
 	for i := range 4 {
@@ -176,7 +204,7 @@ func TestServiceAccountLifecyclePreservesStaticEntries(t *testing.T) {
 	check(2)
 	require.NotEqual(t, initialIDs, store.ids())
 	for _, entry := range store.entries {
-		if len(entry.Selectors) == 2 {
+		if len(entry.Selectors) >= 2 {
 			require.Equal(t, "spiffe://example.org/new-parent", entry.ParentID.String())
 		}
 	}
@@ -191,7 +219,9 @@ func TestServiceAccountLifecyclePreservesStaticEntries(t *testing.T) {
 	check(1)
 	require.NoError(t, k8s.Delete(ctx, rule))
 	check(0)
-	require.NoError(t, k8s.Create(ctx, serviceAccountRule("replacement")))
+	replacement := serviceAccountRule("replacement")
+	replacement.Spec.WorkloadSelectorTemplates = templates
+	require.NoError(t, k8s.Create(ctx, replacement))
 	check(1)
 }
 
@@ -535,7 +565,7 @@ type serviceAccountEntryClient struct {
 	listErr, createErr, updateErr, deleteErr error
 	createStatus, deleteStatus               codes.Code
 	malformedCreate, lostCreateResponse      bool
-	createCalls                              int
+	createCalls, updateCalls, deleteCalls    int
 }
 
 func (c *serviceAccountEntryClient) GetUnsupportedFields(context.Context, string) (map[spireapi.Field]struct{}, error) {
@@ -584,6 +614,7 @@ func (c *serviceAccountEntryClient) CreateEntries(_ context.Context, entries []s
 }
 
 func (c *serviceAccountEntryClient) UpdateEntries(_ context.Context, entries []spireapi.Entry) ([]spireapi.Status, error) {
+	c.updateCalls++
 	if c.updateErr != nil {
 		return nil, c.updateErr
 	}
@@ -595,6 +626,7 @@ func (c *serviceAccountEntryClient) UpdateEntries(_ context.Context, entries []s
 }
 
 func (c *serviceAccountEntryClient) DeleteEntries(_ context.Context, ids []string) ([]spireapi.Status, error) {
+	c.deleteCalls++
 	if c.deleteErr != nil {
 		return nil, c.deleteErr
 	}

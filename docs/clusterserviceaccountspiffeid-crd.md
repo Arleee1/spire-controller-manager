@@ -1,8 +1,10 @@
 # ClusterServiceAccountSPIFFEID
 
-This opt-in, cluster-scoped `spire.spiffe.io/v1alpha1` resource generates one
-SPIRE registration per selected namespace/service-account pair for each rule.
-It intentionally registers service accounts that have no running Pods.
+This opt-in, cluster-scoped `spire.spiffe.io/v1alpha1` resource evaluates
+selected namespace/service-account pairs for each rule. By default, it generates
+one SPIRE registration per pair. Optional selector templates allow other
+workload selectors without changing the objects it enumerates. Service accounts
+with no running Pods are intentionally included.
 
 Unlike ClusterSPIFFEID, it never reads Pods, Nodes or Endpoints to generate
 entries. It watches Namespace and ServiceAccount creation, deletion and metadata
@@ -18,24 +20,39 @@ ClusterStaticEntry bootstrap entries can be reconciled in the same process.
 | `serviceAccountSelector` | No | Kubernetes label selector within selected namespaces. Omitted or `{}` selects all service accounts. |
 | `spiffeIDTemplate` | Yes | Nonempty Go text template for the workload SPIFFE ID. |
 | `parentIDTemplate` | Yes | Nonempty Go text template for the parent authorized by the SPIRE deployment. |
+| `workloadSelectorTemplates` | No | Nonempty list of templates producing the complete SPIRE selector set. Omitted or null retains the default namespace/service-account selectors. `[]` is invalid. |
 | `className` | No | Uses SCM's existing `className` and `watchClassless` filtering. |
 
-Both templates expose `TrustDomain`, `ClusterName`, `NamespaceMeta` and
+All templates expose `TrustDomain`, `ClusterName`, `NamespaceMeta` and
 `ServiceAccountMeta`. The metadata fields are Kubernetes `ObjectMeta` values,
 so names, labels and annotations are available. There are no Pod, Node or
-container fields. Templates use `missingkey=error`; missing map keys in field
-expressions are errors. Both rendered IDs must be valid SPIFFE IDs in the
-configured trust domain.
+container fields, including no synthetic `PodMeta` or `PodSpec`. Go
+`text/template` built-in functions such as `index` and `printf` are available;
+there are no extra template functions. Templates use `missingkey=error`;
+missing map keys in field expressions are errors. The built-in `index` keeps
+Go's normal behavior of returning a zero value for a missing map key, so
+templates using it must handle absent metadata deliberately. Both rendered IDs
+must be valid SPIFFE IDs in the configured trust domain.
 
-Every entry has exactly these selectors, derived from the objects rather than
-from templates:
+When `workloadSelectorTemplates` is omitted, every entry has exactly these
+selectors derived from the objects:
 
 ```text
 k8s:ns:<namespace>
 k8s:sa:<service-account>
 ```
 
-There is no Pod UID selector and no arbitrary selector override. SVID TTLs use
+An explicit list replaces the entire set. No namespace, service-account or
+Pod UID selector is implicitly appended. Each selector is split on its first
+colon into `type:value`; further colons and payload whitespace are preserved.
+The type and value must be nonempty and not whitespace-only. The selector list
+is sorted by type then value and exact duplicates are removed. A failed
+template or invalid selector rejects the entire candidate entry, never just
+that selector.
+
+SPIRE treats the selector set as constraints that must all match, not as
+alternatives. SCM validates the selector framing but cannot establish whether
+a particular workload attestor supports or emits a selector. SVID TTLs use
 SPIRE defaults; this resource does not grant admin or downstream privileges.
 
 ## Example
@@ -51,7 +68,28 @@ spec:
       io.cilium/mtls-enabled: "true"
   spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .NamespaceMeta.Name }}/sa/{{ .ServiceAccountMeta.Name }}"
   parentIDTemplate: "spiffe://{{ .TrustDomain }}/ns/spire/sa/spire-agent"
+  workloadSelectorTemplates:
+    - "k8s:ns:{{ .NamespaceMeta.Name }}"
+    - "k8s:sa:{{ .ServiceAccountMeta.Name }}"
 ```
+
+These explicit templates are equivalent to omitting the field, including
+registration IDs. Reordering or repeating selectors does not change the
+resulting selector set or registration ID. To add a constraint derived from
+service-account metadata, explicitly retain both bindings:
+
+```yaml
+workloadSelectorTemplates:
+  - "k8s:ns:{{ .NamespaceMeta.Name }}"
+  - "k8s:sa:{{ .ServiceAccountMeta.Name }}"
+  - "k8s:pod-label:app:{{ .ServiceAccountMeta.Labels.app }}"
+```
+
+The last selector is only a declaration of what SPIRE should attest. It does
+not make SCM read or watch Pods. Validate the selector spelling and issuance
+behavior against the installed SPIRE attestor and delegated identity path.
+Arbitrary types, metadata keys and colon-containing values are supported, for
+example `custom:resource:{{ index .ServiceAccountMeta.Annotations "example.org/resource" }}`.
 
 The parent in this example is a shared SPIRE agent alias. Replace its namespace
 and service-account name with those used by the deployment. A constant template
@@ -94,9 +132,25 @@ events and SPIRE-side drift.
 Registration IDs use a stable `serviceaccount.` scope under `entryIDPrefix`,
 derived from the trust domain, cluster name and controller class, with an
 entry-content identifier. Restarts and ambiguous create responses do not
-produce new IDs. Identical declarations from overlapping rules share an entry
-using SCM's existing precedence and masking logic. Different SPIFFE IDs or
-parents remain distinct declarations even for the same pair.
+produce new IDs. The baseline namespace/service-account ID algorithm is
+preserved for that selector shape. Other selector sets use an unambiguous
+content digest so selector field boundaries cannot conflate distinct entries.
+Shared-store grouping also preserves those boundaries; existing entries keep
+their stored registration IDs when reused.
+
+Candidates within one rule that render the same SPIFFE ID, parent ID and
+selector set coalesce into one registration. For example, an identity template
+`spiffe://{{ .TrustDomain }}/ns/{{ .NamespaceMeta.Name }}` with only
+`k8s:ns:{{ .NamespaceMeta.Name }}` produces one entry for a namespace with at
+least one selected service account. Removing one account leaves the entry
+while another selected account still declares it; removing the last candidate
+collects it. A constant identity and selector set can similarly coalesce across
+namespaces.
+
+Identical declarations from different rules share an entry using SCM's
+existing precedence and masking logic. Different SPIFFE IDs or parents remain
+distinct declarations even when their selectors match. Candidate enumeration
+order and selector ordering do not affect these identities.
 
 When only this controller is enabled, it manages only its scoped registrations
 and leaves unrelated entries untouched. An identical unmanaged entry is not
@@ -123,10 +177,15 @@ scope.
 `status.observedGeneration` and the `Ready` condition report the most recent
 reconciliation. Statistics count selected/ignored namespaces, selected service
 accounts, render failures, masked entries, desired entries and SPIRE write
-failures.
+failures. `serviceAccountsSelected` counts candidate objects;
+`entriesToSet` counts unique preferred entries. Coalesced candidates in the
+same rule do not increase `entriesMasked`, which counts masking by other rules.
 
-Invalid template syntax or selectors produce `InvalidSpec`. Execution errors,
-invalid IDs and trust-domain mismatches produce `RenderFailed`. Invalid rules
+Invalid template syntax, Kubernetes label selectors or an explicitly empty
+template list produce `InvalidSpec`. Execution errors, malformed rendered
+selectors, invalid IDs and trust-domain mismatches produce `RenderFailed`.
+The CRD schema also rejects an explicitly empty list and empty template strings.
+Invalid rules
 or failed pairs declare no entries, so their previous registrations are
 removed on a successful SPIRE pass. This is intentionally fail-closed.
 Kubernetes list failures abort the write pass rather than interpreting an
@@ -140,11 +199,23 @@ successfully obtained an SVID or established an mTLS connection.
 
 ## Identity and security tradeoff
 
-All workloads using the same namespace and service-account name share this
-identity, across Pods and Nodes allowed by the parent relationship. Pod UID and
-node-specific binding are intentionally absent. Pod churn therefore does not
-create registrations or require controller work. Cost scales with selected
-namespaces and service accounts, not the number of Pods.
+With the default selectors, all workloads using the same namespace and
+service-account name share this identity, across Pods and Nodes allowed by the
+parent relationship. Pod UID and node-specific binding are intentionally
+absent. Pod churn therefore does not create registrations or require controller
+work. Cost scales with selected namespaces and service accounts, not the number
+of Pods, even when selector templates mention properties SPIRE attests on Pods.
+
+Namespace/service-account selection controls which objects generate
+declarations; it is **not an authorization selector**. If an explicit selector
+list omits namespace or service-account bindings, workloads outside those
+selected objects may qualify under the chosen parent. An identity path that
+contains namespace or service-account names does not add those bindings.
+For example, `unix:uid:1000` alone may match any workload with that attested
+UID authorized by the parent, regardless of the candidate's namespace.
+Likewise, copying a label or annotation into a selector does not itself prove
+that the workload has that attribute. Retain the ns/sa selectors when that
+boundary is required.
 
 Deleting and recreating a service account under the same name reuses its
 name-based identity. Removing a registration prevents subsequent issuance once
@@ -177,7 +248,11 @@ GOMAXPROCS=2 go test -race -p 2 ./pkg/spireentry ./cmd -run TestServiceAccount
 The tests include a real local API server/informer check that rejects any
 manager request for Pods, Nodes or Endpoints with the legacy controller
 disabled, plus shared-store lifecycle tests that retain four static bootstrap
-entries while service-account entries change.
+entries while service-account entries change. Selector-template tests also
+cover omitted and explicit defaults, baseline ID stability, colon preservation,
+metadata changes, fail-closed errors, duplicate candidates, selector ordering
+and unambiguous entry keys. The API-server test checks the explicit list,
+null/omitted behavior, empty-list rejection and annotation-driven events.
 
 Build locally without publishing:
 

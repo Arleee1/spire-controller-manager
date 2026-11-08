@@ -2,8 +2,12 @@ package spireentry
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"slices"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -15,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -42,19 +47,58 @@ func renderServiceAccountEntry(spec *spirev1alpha1.ParsedClusterServiceAccountSP
 	if err != nil {
 		return nil, fmt.Errorf("failed to render parent ID: %w", err)
 	}
+	selectors := []spireapi.Selector{
+		{Type: "k8s", Value: "ns:" + ns.Name},
+		{Type: "k8s", Value: "sa:" + sa.Name},
+	}
+	if spec.WorkloadSelectorTemplates != nil {
+		if len(spec.WorkloadSelectorTemplates) == 0 {
+			return nil, fmt.Errorf("workloadSelectorTemplates must contain at least one template when specified")
+		}
+		selectors = make([]spireapi.Selector, 0, len(spec.WorkloadSelectorTemplates))
+		for i, tmpl := range spec.WorkloadSelectorTemplates {
+			selector, err := renderSelector(tmpl, data)
+			if err != nil {
+				return nil, fmt.Errorf("workloadSelectorTemplates[%d]: %w", i, err)
+			}
+			if strings.TrimSpace(selector.Type) == "" || strings.TrimSpace(selector.Value) == "" {
+				return nil, fmt.Errorf("workloadSelectorTemplates[%d]: selector type and value must not be blank", i)
+			}
+			selectors = append(selectors, selector)
+		}
+		selectors = slices.Compact(sortSelectors(selectors))
+	}
 	return &spireapi.Entry{
-		SPIFFEID: id,
-		ParentID: parentID,
-		Selectors: []spireapi.Selector{
-			{Type: "k8s", Value: "ns:" + ns.Name},
-			{Type: "k8s", Value: "sa:" + sa.Name},
-		},
+		SPIFFEID:  id,
+		ParentID:  parentID,
+		Selectors: selectors,
 	}, nil
 }
 
 func (r *entryReconciler) serviceAccountEntryIDPrefix() string {
 	scope := r.config.TrustDomain.Name() + "\x00" + r.config.ClusterName + "\x00" + r.config.ClassName
 	return r.config.EntryIDPrefix + serviceAccountEntryIDMarker + uuid.NewSHA1(uuid.NameSpaceOID, []byte(scope)).String() + "."
+}
+
+func (r *entryReconciler) serviceAccountEntryID(entry spireapi.Entry) string {
+	key := makeEntryKey(entry)
+	selectors := sortSelectors(entry.Selectors)
+	if len(selectors) == 2 && selectors[0].Type == "k8s" && selectors[1].Type == "k8s" {
+		ns, hasNamespace := strings.CutPrefix(selectors[0].Value, "ns:")
+		sa, hasServiceAccount := strings.CutPrefix(selectors[1].Value, "sa:")
+		if hasNamespace && hasServiceAccount && len(validation.IsDNS1123Label(ns)) == 0 && len(validation.IsDNS1123Subdomain(sa)) == 0 {
+			// Keep baseline IDs for the fixed ns/sa shape, including equivalent templates.
+			h := sha256.New()
+			_, _ = io.WriteString(h, entry.SPIFFEID.String())
+			_, _ = io.WriteString(h, entry.ParentID.String())
+			for _, selector := range selectors {
+				_, _ = io.WriteString(h, selector.Type)
+				_, _ = io.WriteString(h, selector.Value)
+			}
+			key = entryKey(hex.EncodeToString(h.Sum(nil)))
+		}
+	}
+	return r.serviceAccountEntryIDPrefix() + uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
 }
 
 func (r *entryReconciler) listClusterServiceAccountSPIFFEIDs(ctx context.Context) ([]*ClusterServiceAccountSPIFFEID, error) {
@@ -94,6 +138,7 @@ func (r *entryReconciler) addClusterServiceAccountSPIFFEIDEntriesState(ctx conte
 			return fmt.Errorf("failed to list namespaces for %s: %w", by.Name, err)
 		}
 		by.NextStatus.Stats.NamespacesSelected = len(namespaces)
+		declared := make(map[entryKey]struct{})
 		for i := range namespaces {
 			ns := &namespaces[i]
 			if namespace.IsIgnored(r.config.IgnoreNamespaces, ns.Name) {
@@ -124,7 +169,12 @@ func (r *entryReconciler) addClusterServiceAccountSPIFFEIDEntriesState(ctx conte
 					continue
 				}
 				// Stable, scoped IDs survive retries and restarts without adopting unrelated entries.
-				entry.ID = r.serviceAccountEntryIDPrefix() + uuid.NewSHA1(uuid.NameSpaceOID, []byte(makeEntryKey(*entry))).String()
+				key := makeEntryKey(*entry)
+				if _, exists := declared[key]; exists {
+					continue
+				}
+				declared[key] = struct{}{}
+				entry.ID = r.serviceAccountEntryID(*entry)
 				state.AddDeclared(*entry, by)
 			}
 		}

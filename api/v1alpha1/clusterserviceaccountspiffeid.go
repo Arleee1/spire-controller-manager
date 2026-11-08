@@ -13,10 +13,11 @@ import (
 
 // ParsedClusterServiceAccountSPIFFEIDSpec is a validated service-account identity rule.
 type ParsedClusterServiceAccountSPIFFEIDSpec struct {
-	NamespaceSelector      labels.Selector
-	ServiceAccountSelector labels.Selector
-	SPIFFEIDTemplate       *template.Template
-	ParentIDTemplate       *template.Template
+	NamespaceSelector         labels.Selector
+	ServiceAccountSelector    labels.Selector
+	SPIFFEIDTemplate          *template.Template
+	ParentIDTemplate          *template.Template
+	WorkloadSelectorTemplates []*template.Template
 }
 
 // ParseClusterServiceAccountSPIFFEIDSpec parses selectors and strict Go templates.
@@ -40,11 +41,25 @@ func ParseClusterServiceAccountSPIFFEIDSpec(spec *ClusterServiceAccountSPIFFEIDS
 	if err != nil {
 		return nil, err
 	}
+	var workloadSelectorTemplates []*template.Template
+	if spec.WorkloadSelectorTemplates != nil {
+		if len(*spec.WorkloadSelectorTemplates) == 0 {
+			return nil, fmt.Errorf("workloadSelectorTemplates must contain at least one template when specified")
+		}
+		for i, value := range *spec.WorkloadSelectorTemplates {
+			tmpl, err := parseServiceAccountTemplate(fmt.Sprintf("workloadSelectorTemplates[%d]", i), value)
+			if err != nil {
+				return nil, err
+			}
+			workloadSelectorTemplates = append(workloadSelectorTemplates, tmpl)
+		}
+	}
 	return &ParsedClusterServiceAccountSPIFFEIDSpec{
-		NamespaceSelector:      namespaceSelector,
-		ServiceAccountSelector: serviceAccountSelector,
-		SPIFFEIDTemplate:       spiffeIDTemplate,
-		ParentIDTemplate:       parentIDTemplate,
+		NamespaceSelector:         namespaceSelector,
+		ServiceAccountSelector:    serviceAccountSelector,
+		SPIFFEIDTemplate:          spiffeIDTemplate,
+		ParentIDTemplate:          parentIDTemplate,
+		WorkloadSelectorTemplates: workloadSelectorTemplates,
 	}, nil
 }
 

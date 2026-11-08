@@ -18,6 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -135,6 +136,11 @@ func TestServiceAccountControllerWatchesWithoutPodInformer(t *testing.T) {
 		sa.Labels = map[string]string{"role": "app"}
 		require.NoError(t, direct.Update(ctx, sa))
 	})
+	event(func() {
+		require.NoError(t, direct.Get(ctx, client.ObjectKeyFromObject(sa), sa))
+		sa.Annotations = map[string]string{"example.org/selector": "custom:value:with:colons"}
+		require.NoError(t, direct.Update(ctx, sa))
+	})
 	rule := &spirev1alpha1.ClusterServiceAccountSPIFFEID{
 		ObjectMeta: metav1.ObjectMeta{Name: "watch-test"},
 		Spec: spirev1alpha1.ClusterServiceAccountSPIFFEIDSpec{
@@ -146,9 +152,21 @@ func TestServiceAccountControllerWatchesWithoutPodInformer(t *testing.T) {
 	event(func() { require.NoError(t, direct.Create(ctx, rule)) })
 	event(func() {
 		require.NoError(t, direct.Get(ctx, client.ObjectKeyFromObject(rule), rule))
+		require.Nil(t, rule.Spec.WorkloadSelectorTemplates)
 		rule.Spec.ClassName = "new-class"
+		rule.Spec.WorkloadSelectorTemplates = &[]string{
+			"k8s:ns:{{ .NamespaceMeta.Name }}",
+			"k8s:sa:{{ .ServiceAccountMeta.Name }}",
+			`{{ index .ServiceAccountMeta.Annotations "example.org/selector" }}`,
+		}
 		require.NoError(t, direct.Update(ctx, rule))
 	})
+	require.NoError(t, direct.Get(ctx, client.ObjectKeyFromObject(rule), rule))
+	require.Equal(t, []string{
+		"k8s:ns:{{ .NamespaceMeta.Name }}",
+		"k8s:sa:{{ .ServiceAccountMeta.Name }}",
+		`{{ index .ServiceAccountMeta.Annotations "example.org/selector" }}`,
+	}, *rule.Spec.WorkloadSelectorTemplates)
 	event(func() { require.NoError(t, direct.Delete(ctx, sa)) })
 	event(func() { require.NoError(t, direct.Delete(ctx, ns)) })
 	event(func() { require.NoError(t, direct.Delete(ctx, rule)) })
@@ -161,6 +179,28 @@ func TestServiceAccountControllerWatchesWithoutPodInformer(t *testing.T) {
 	invalid.Spec.SPIFFEIDTemplate = rule.Spec.SPIFFEIDTemplate
 	invalid.Spec.ParentIDTemplate = ""
 	require.True(t, apierrors.IsInvalid(direct.Create(ctx, invalid)), "schema must reject empty parent templates")
+	invalid.Spec.ParentIDTemplate = rule.Spec.ParentIDTemplate
+	invalid.Spec.WorkloadSelectorTemplates = &[]string{}
+	require.True(t, apierrors.IsInvalid(direct.Create(ctx, invalid)), "schema must reject an explicitly empty selector list")
+	invalid.Spec.WorkloadSelectorTemplates = &[]string{""}
+	require.True(t, apierrors.IsInvalid(direct.Create(ctx, invalid)), "schema must reject an empty selector template")
+
+	nullable := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "spire.spiffe.io/v1alpha1",
+		"kind":       "ClusterServiceAccountSPIFFEID",
+		"metadata":   map[string]any{"name": "null-selectors"},
+		"spec": map[string]any{
+			"namespaceSelector":         map[string]any{},
+			"spiffeIDTemplate":          rule.Spec.SPIFFEIDTemplate,
+			"parentIDTemplate":          rule.Spec.ParentIDTemplate,
+			"workloadSelectorTemplates": nil,
+		},
+	}}
+	require.NoError(t, direct.Create(ctx, nullable))
+	var nullRule spirev1alpha1.ClusterServiceAccountSPIFFEID
+	require.NoError(t, direct.Get(ctx, client.ObjectKeyFromObject(nullable), &nullRule))
+	require.Nil(t, nullRule.Spec.WorkloadSelectorTemplates, "null is pruned to the omitted/default behavior")
+	require.NoError(t, direct.Delete(ctx, nullable))
 
 	for path := range requests.snapshot() {
 		for _, forbidden := range []string{"/pods", "/nodes", "/endpoints", "/clusterspiffeids"} {
