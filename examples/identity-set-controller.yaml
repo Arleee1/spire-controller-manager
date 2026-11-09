@@ -1,0 +1,18 @@
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ControllerManagerConfig
+clusterName: example-cluster
+clusterDomain: cluster.local
+trustDomain: example.org
+spireServerSocketPath: /spire-server/api.sock
+entryIDPrefix: example-cluster
+reconcile:
+  clusterSPIFFEIDs: false
+  clusterSPIFFEIDSets: true
+  clusterStaticEntries: true
+  clusterFederatedTrustDomains: false
+clusterSPIFFEIDSet:
+  allowedInputKinds:
+    - apiVersion: v1
+      kind: Namespace
+    - apiVersion: v1
+      kind: ServiceAccount

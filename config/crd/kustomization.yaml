@@ -6,6 +6,7 @@ resources:
 - bases/spire.spiffe.io_clusterfederatedtrustdomains.yaml
 - bases/spire.spiffe.io_controllermanagerconfigs.yaml
 - bases/spire.spiffe.io_clusterstaticentries.yaml
+- bases/spire.spiffe.io_clusterspiffeidsets.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 patchesStrategicMerge:

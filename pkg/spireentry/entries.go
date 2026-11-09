@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"text/template"
@@ -151,7 +152,7 @@ type templateData struct {
 	NodeSpec      *corev1.NodeSpec
 }
 
-func renderSPIFFEID(tmpl *template.Template, data *templateData, expectTD spiffeid.TrustDomain) (spiffeid.ID, error) {
+func renderSPIFFEID(tmpl *template.Template, data any, expectTD spiffeid.TrustDomain) (spiffeid.ID, error) {
 	rendered, err := renderTemplate(tmpl, data)
 	if err != nil {
 		return spiffeid.ID{}, err
@@ -206,7 +207,7 @@ func dnsNamesFromEndpoints(endpointsList *corev1.EndpointsList, clusterDomain st
 	return dnsNames
 }
 
-func renderSelector(tmpl *template.Template, data *templateData) (spireapi.Selector, error) {
+func renderSelector(tmpl *template.Template, data any) (spireapi.Selector, error) {
 	rendered, err := renderTemplate(tmpl, data)
 	if err != nil {
 		return spireapi.Selector{}, err
@@ -218,7 +219,25 @@ func renderSelector(tmpl *template.Template, data *templateData) (spireapi.Selec
 	return selector, nil
 }
 
-func renderTemplate(tmpl *template.Template, data *templateData) (string, error) {
+func renderWorkloadSelectors(templates []*template.Template, data any) ([]spireapi.Selector, error) {
+	if len(templates) == 0 {
+		return nil, errors.New("workloadSelectorTemplates must contain at least one template")
+	}
+	selectors := make([]spireapi.Selector, 0, len(templates))
+	for i, tmpl := range templates {
+		selector, err := renderSelector(tmpl, data)
+		if err != nil {
+			return nil, fmt.Errorf("workloadSelectorTemplates[%d]: %w", i, err)
+		}
+		if strings.TrimSpace(selector.Type) == "" || strings.TrimSpace(selector.Value) == "" {
+			return nil, fmt.Errorf("workloadSelectorTemplates[%d]: selector type and value must not be blank", i)
+		}
+		selectors = append(selectors, selector)
+	}
+	return slices.Compact(sortSelectors(selectors)), nil
+}
+
+func renderTemplate(tmpl *template.Template, data any) (string, error) {
 	buf := new(bytes.Buffer)
 	if err := tmpl.Execute(buf, data); err != nil {
 		return "", fmt.Errorf("failed to execute template: %w", err)

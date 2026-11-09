@@ -61,6 +61,30 @@ GRPC Config Options
 
 By default, all objects are synced from the Kubernetes cluster the spire-controller-manager is running in.
 
+### Explicit-input identity sets
+
+`ClusterSPIFFEIDSet` reconciliation is disabled by default. Existing controller
+defaults are unchanged. If `reconcile` is present, only its enabled types run;
+an empty `reconcile: {}` disables all reconciliation types.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `reconcile.clusterSPIFFEIDSets` | `false` | Enable explicit-input identity sets in the shared entry reconciler. |
+| `clusterSPIFFEIDSet.allowedInputKinds` | `[]` | Exact `apiVersion`/`kind` allowlist. Empty allows only constant rules. |
+
+Only active declared kinds receive input informers. Core Pod and Secret inputs,
+wildcards, list kinds and subresources are forbidden. The allowlist grants no
+RBAC: administrators must separately grant narrow reads for the chosen resources.
+Input list/watch requests are cluster-wide; labels and namespace correlations
+are applied to the indexed cache.
+
+Sets cannot be combined with `cacheNamespace`, nonempty `cacheNamespaces` or
+`staticManifestPath`. These combinations fail explicitly at startup. Existing
+scoped-cache and static modes remain unchanged when Sets are disabled.
+
+See [ClusterSPIFFEIDSet](clusterspiffeidset-crd.md) for examples, selector
+authorization boundaries, scoped registration IDs and failure behavior.
+
 ## TCP SPIFFE mTLS Mode
 
 To connect to the SPIRE Server API over TCP, set `spireServerAddress` instead of `spireServerSocketPath`. Before starting the controller manager, provision a static registration entry granting its SPIFFE ID SPIRE Server admin access (`admin: true`), independently of this controller manager's reconciliation loop. It cannot bootstrap its own admin access.

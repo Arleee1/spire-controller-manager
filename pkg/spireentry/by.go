@@ -2,6 +2,7 @@ package spireentry
 
 import (
 	spirev1alpha1 "github.com/spiffe/spire-controller-manager/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -57,4 +58,28 @@ func (by *ClusterSPIFFEID) IncrementEntrySuccess() {
 
 func (by *ClusterSPIFFEID) IncrementEntryFailures() {
 	by.NextStatus.Stats.EntryFailures++
+}
+
+type ClusterSPIFFEIDSet struct {
+	spirev1alpha1.ClusterSPIFFEIDSet
+	NextStatus spirev1alpha1.ClusterSPIFFEIDSetStatus
+}
+
+func (by *ClusterSPIFFEIDSet) IncrementEntriesToSet() { by.NextStatus.Stats.EntriesToSet++ }
+
+func (by *ClusterSPIFFEIDSet) IncrementEntriesMasked() { by.NextStatus.Stats.EntriesMasked++ }
+
+func (by *ClusterSPIFFEIDSet) IncrementEntrySuccess() {}
+
+func (by *ClusterSPIFFEIDSet) IncrementEntryFailures() {
+	by.NextStatus.Stats.EntryFailures++
+	by.setCondition(metav1.ConditionFalse, "SPIREAPIError", "Failed to create or update SPIRE entries; see controller logs")
+}
+
+func (by *ClusterSPIFFEIDSet) setCondition(status metav1.ConditionStatus, reason, message string) {
+	condition := metav1.Condition{Type: "Ready", Status: status, ObservedGeneration: by.Generation, Reason: reason, Message: message}
+	if previous := meta.FindStatusCondition(by.Status.Conditions, "Ready"); previous != nil && previous.Status == status {
+		condition.LastTransitionTime = previous.LastTransitionTime
+	}
+	meta.SetStatusCondition(&by.NextStatus.Conditions, condition)
 }

@@ -44,6 +44,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&ClusterFederatedTrustDomainList{},
 		&ClusterSPIFFEID{},
 		&ClusterSPIFFEIDList{},
+		&ClusterSPIFFEIDSet{},
+		&ClusterSPIFFEIDSetList{},
 		&ClusterStaticEntry{},
 		&ClusterStaticEntryList{},
 		&ControllerManagerConfig{},

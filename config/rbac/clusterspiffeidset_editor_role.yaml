@@ -1,0 +1,24 @@
+# permissions for end users to edit clusterspiffeidsets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: clusterspiffeidset-editor-role
+rules:
+- apiGroups:
+  - spire.spiffe.io
+  resources:
+  - clusterspiffeidsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - spire.spiffe.io
+  resources:
+  - clusterspiffeidsets/status
+  verbs:
+  - get

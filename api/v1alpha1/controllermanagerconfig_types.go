@@ -195,9 +195,14 @@ type ControllerManagerConfigurationSpec struct {
 	// +optional
 	ParentIDTemplate string `json:"parentIDTemplate,omitempty"`
 
-	// If specified, only syncs the specified CR types. Defaults to all.
+	// If specified, only syncs the specified CR types. Defaults to the existing
+	// controllers; ClusterSPIFFEIDSet reconciliation is opt-in.
 	// +optional
 	Reconcile *ReconcileConfig `json:"reconcile,omitempty"`
+
+	// ClusterSPIFFEIDSet controls the exact kinds allowed as generic iteration inputs.
+	// +optional
+	ClusterSPIFFEIDSet ClusterSPIFFEIDSetConfig `json:"clusterSPIFFEIDSet,omitempty"`
 
 	// If specified, prefixes each entry id with `<prefix>.`. Entries without the Prefix will be ignored (except ones marked for cleanup, see EntryIDPrefixCleanup).
 	// +optiional
@@ -233,6 +238,11 @@ type ReconcileConfig struct {
 	// +optional
 	ClusterSPIFFEIDs bool `json:"clusterSPIFFEIDs,omitempty"`
 
+	// ClusterSPIFFEIDSets enables explicit-input identity sets. Disabled by default.
+	// Not supported with staticManifestPath.
+	// +optional
+	ClusterSPIFFEIDSets bool `json:"clusterSPIFFEIDSets,omitempty"`
+
 	// ClusterFederatedTrustDomains enable syncing of clusterfederatedtrustdomains
 	// +optional
 	ClusterFederatedTrustDomains bool `json:"clusterFederatedTrustDomains,omitempty"`
@@ -240,6 +250,15 @@ type ReconcileConfig struct {
 	// ClusterStaticEntries enable syncing of clusterstaticentries
 	// +optional
 	ClusterStaticEntries bool `json:"clusterStaticEntries,omitempty"`
+}
+
+// ClusterSPIFFEIDSetConfig limits input access without granting Kubernetes permissions.
+type ClusterSPIFFEIDSetConfig struct {
+	// AllowedInputKinds is an exact apiVersion/kind allowlist. Empty allows only constant rules.
+	// Operators must separately grant list/watch for each permitted resource.
+	// Core Pod and Secret inputs are always forbidden.
+	// +optional
+	AllowedInputKinds []SPIFFEIDSetKind `json:"allowedInputKinds,omitempty"`
 }
 
 // NamespaceConfig configuration used to filter cached namespaces

@@ -51,8 +51,17 @@ rules:
   resources:
   - clusterfederatedtrustdomains/status
   - clusterspiffeids/status
+  - clusterspiffeidsets/status
   - clusterstaticentries/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - spire.spiffe.io
+  resources:
+  - clusterspiffeidsets
+  verbs:
+  - get
+  - list
+  - watch

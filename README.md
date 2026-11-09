@@ -18,6 +18,15 @@ The [ClusterSPIFFEID](docs/clusterspiffeid-crd.md) resource is a cluster scoped
 CRD that describes the shape of the identity that is applied to workloads, as
 well as selectors that describe which workloads the identity applies to.
 
+#### ClusterSPIFFEIDSet
+
+The [ClusterSPIFFEIDSet](docs/clusterspiffeidset-crd.md) resource is an opt-in
+cluster scoped CRD for explicit-input registration sets. It can declare one
+registration per namespace/service-account pair instead of redundant per-Pod
+registrations, or use other administrator-allowed Kubernetes inputs. It does
+not add implicit selectors or enumerate Pods. Constant declarations need no
+workload inputs.
+
 #### ClusterFederatedTrustDomain
 
 The [ClusterFederatedTrustDomain](docs/clusterfederatedtrustdomain-crd.md)
@@ -49,6 +58,12 @@ the existing Pods and ClusterSPIFFEID resources which apply to those pods, as
 well as static entries declared via ClusterStaticEntry resources. The
 reconciliation process creates, updates, and deletes entries on SPIRE server as
 appropriate to match the declared state.
+
+When `reconcile.clusterSPIFFEIDSets` is enabled, Set declarations and their
+explicitly selected input kinds also trigger this same reconciliation pass.
+The controller starts one informer per active, allowlisted GVK and stops it
+when no rule uses it. Input-resource read permissions must be granted
+explicitly by the administrator; enabling Sets does not grant them.
 
 #### Federation
 

@@ -21,8 +21,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"slices"
 	"sort"
@@ -39,6 +39,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,6 +47,7 @@ import (
 
 	spirev1alpha1 "github.com/spiffe/spire-controller-manager/api/v1alpha1"
 	"github.com/spiffe/spire-controller-manager/pkg/k8sapi"
+	"github.com/spiffe/spire-controller-manager/pkg/k8sinput"
 	"github.com/spiffe/spire-controller-manager/pkg/metrics"
 	"github.com/spiffe/spire-controller-manager/pkg/namespace"
 	"github.com/spiffe/spire-controller-manager/pkg/reconciler"
@@ -70,6 +72,7 @@ type ReconcilerConfig struct {
 	ClusterDomain            string
 	EntryClient              spireapi.EntryClient
 	K8sClient                client.Client
+	Inputs                   k8sinput.Source
 	IgnoreNamespaces         []*regexp.Regexp
 	AutoPopulateDNSNames     bool
 	ClassName                string
@@ -120,11 +123,26 @@ func Reconciler(config ReconcilerConfig) reconciler.Reconciler {
 			r.renderCache = renderCache
 		}
 	}
-	return reconciler.New(reconciler.Config{
+	runner := reconciler.New(reconciler.Config{
 		Kind:       "entry",
 		Reconcile:  r.reconcile,
 		GCInterval: config.GCInterval,
 	})
+	if config.Inputs != nil {
+		config.Inputs.SetTrigger(runner.Trigger)
+		return &inputManagedReconciler{Reconciler: runner, inputs: config.Inputs}
+	}
+	return runner
+}
+
+type inputManagedReconciler struct {
+	reconciler.Reconciler
+	inputs k8sinput.Source
+}
+
+func (r *inputManagedReconciler) Run(ctx context.Context) error {
+	defer r.inputs.Close()
+	return r.Reconciler.Run(ctx)
 }
 
 type entryReconciler struct {
@@ -159,6 +177,16 @@ func (c *cachedEntry) isValid(podRV, nodeRV, specHash, endpointsRV string) bool 
 func (r *entryReconciler) reconcile(ctx context.Context) {
 	log := log.FromContext(ctx)
 
+	var identitySets []*ClusterSPIFFEIDSet
+	if r.config.Reconcile.ClusterSPIFFEIDSets {
+		var err error
+		identitySets, err = r.listClusterSPIFFEIDSets(ctx)
+		if err != nil {
+			log.Error(err, "Failed to list ClusterSPIFFEIDSets")
+			return
+		}
+	}
+
 	if time.Now().After(r.nextGetUnsupportedFields) {
 		r.recalculateUnsupportFields(ctx, log)
 	}
@@ -168,6 +196,7 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 	currentEntries, deleteOnlyEntries, err := r.listEntries(ctx)
 	if err != nil {
 		log.Error(err, "Failed to list SPIRE entries")
+		r.failIdentitySets(ctx, identitySets, "SPIREAPIError", err)
 		return
 	}
 
@@ -188,6 +217,7 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 			} else {
 				log.Error(err, "Failed to list ClusterStaticEntries")
 			}
+			r.failIdentitySets(ctx, identitySets, "KubernetesAPIError", err)
 			return
 		}
 		r.addClusterStaticEntryEntriesState(ctx, state, clusterStaticEntries)
@@ -199,6 +229,7 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 		clusterSPIFFEIDs, err = r.listClusterSPIFFEIDs(ctx)
 		if err != nil {
 			log.Error(err, "Failed to list ClusterSPIFFEIDs")
+			r.failIdentitySets(ctx, identitySets, "KubernetesAPIError", err)
 			return
 		}
 
@@ -207,9 +238,19 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 		nodeMap, err := r.buildNodeMap(ctx)
 		if err != nil {
 			log.Error(err, "Failed to list nodes")
+			r.failIdentitySets(ctx, identitySets, "KubernetesAPIError", err)
 			return
 		}
 		r.addClusterSPIFFEIDEntriesState(ctx, state, clusterSPIFFEIDs, nodeMap)
+	}
+
+	if r.config.Reconcile.ClusterSPIFFEIDSets {
+		if err := r.addClusterSPIFFEIDSetEntriesState(ctx, state, identitySets); err != nil {
+			// Incomplete input snapshots must not be interpreted as deletions.
+			log.Error(err, "Failed to collect identity-set inputs")
+			r.failIdentitySets(ctx, identitySets, "InputUnavailable", err)
+			return
+		}
 	}
 
 	var toDelete []spireapi.Entry
@@ -254,7 +295,11 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 
 	toDelete = append(toDelete, deleteOnlyEntries...)
 	if len(toDelete) > 0 {
-		r.deleteEntries(ctx, toDelete)
+		if err := r.deleteEntries(ctx, toDelete); err != nil {
+			for _, by := range identitySets {
+				by.setCondition(metav1.ConditionFalse, "SPIREAPIError", err.Error())
+			}
+		}
 	}
 	if len(toCreate) > 0 {
 		r.createEntries(ctx, toCreate)
@@ -262,6 +307,8 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 	if len(toUpdate) > 0 {
 		r.updateEntries(ctx, toUpdate)
 	}
+
+	r.updateIdentitySetStatuses(ctx, identitySets)
 
 	// Update the ClusterStaticEntry statuses
 	for _, clusterStaticEntry := range clusterStaticEntries {
@@ -335,6 +382,12 @@ func (r *entryReconciler) recalculateUnsupportFields(ctx context.Context, log lo
 }
 
 func (r *entryReconciler) shouldProcessOrDeleteEntryID(entry spireapi.Entry) (bool, bool) {
+	if strings.HasPrefix(entry.ID, r.config.EntryIDPrefix+identitySetEntryIDMarker) {
+		return r.config.Reconcile.ClusterSPIFFEIDSets && strings.HasPrefix(entry.ID, r.identitySetEntryIDPrefix()), false
+	}
+	if r.config.Reconcile.ClusterSPIFFEIDSets && !r.config.Reconcile.ClusterSPIFFEIDs && !r.config.Reconcile.ClusterStaticEntries {
+		return false, false
+	}
 	if r.config.EntryIDPrefix == "" {
 		return true, false
 	}
@@ -624,6 +677,9 @@ func (r *entryReconciler) renderPodEntry(ctx context.Context, spec *spirev1alpha
 func (r *entryReconciler) createEntries(ctx context.Context, declaredEntries []declaredEntry) {
 	log := log.FromContext(ctx)
 	statuses, err := r.config.EntryClient.CreateEntries(ctx, entriesFromDeclaredEntries(declaredEntries))
+	if err == nil && len(statuses) != len(declaredEntries) {
+		err = fmt.Errorf("expected %d create results, got %d", len(declaredEntries), len(statuses))
+	}
 	if err != nil {
 		for _, declaredEntry := range declaredEntries {
 			declaredEntry.By.IncrementEntryFailures()
@@ -646,6 +702,9 @@ func (r *entryReconciler) createEntries(ctx context.Context, declaredEntries []d
 func (r *entryReconciler) updateEntries(ctx context.Context, declaredEntries []declaredEntry) {
 	log := log.FromContext(ctx)
 	statuses, err := r.config.EntryClient.UpdateEntries(ctx, entriesFromDeclaredEntries(declaredEntries))
+	if err == nil && len(statuses) != len(declaredEntries) {
+		err = fmt.Errorf("expected %d update results, got %d", len(declaredEntries), len(statuses))
+	}
 	if err != nil {
 		for _, declaredEntry := range declaredEntries {
 			declaredEntry.By.IncrementEntryFailures()
@@ -664,21 +723,27 @@ func (r *entryReconciler) updateEntries(ctx context.Context, declaredEntries []d
 	}
 }
 
-func (r *entryReconciler) deleteEntries(ctx context.Context, entries []spireapi.Entry) {
+func (r *entryReconciler) deleteEntries(ctx context.Context, entries []spireapi.Entry) error {
 	log := log.FromContext(ctx)
 	statuses, err := r.config.EntryClient.DeleteEntries(ctx, idsFromEntries(entries))
+	if err == nil && len(statuses) != len(entries) {
+		err = fmt.Errorf("expected %d delete results, got %d", len(entries), len(statuses))
+	}
 	if err != nil {
 		log.Error(err, "Failed to delete entries")
-		return
+		return err
 	}
+	var failures []error
 	for i, status := range statuses {
 		switch status.Code {
 		case codes.OK:
 			log.Info("Deleted entry", entryLogFields(entries[i])...)
 		default:
+			failures = append(failures, fmt.Errorf("failed to delete entry %s: %w", entries[i].ID, status.Err()))
 			log.Error(status.Err(), "Failed to delete entry", entryLogFields(entries[i])...)
 		}
 	}
+	return errors.Join(failures...)
 }
 
 type entriesState map[entryKey]*entryState
@@ -717,18 +782,6 @@ type declaredEntry struct {
 }
 
 type entryKey string
-
-func makeEntryKey(entry spireapi.Entry) entryKey {
-	h := sha256.New()
-	_, _ = io.WriteString(h, entry.SPIFFEID.String())
-	_, _ = io.WriteString(h, entry.ParentID.String())
-	for _, selector := range sortSelectors(entry.Selectors) {
-		_, _ = io.WriteString(h, selector.Type)
-		_, _ = io.WriteString(h, selector.Value)
-	}
-	sum := h.Sum(nil)
-	return entryKey(hex.EncodeToString(sum))
-}
 
 func sortSelectors(unsorted []spireapi.Selector) []spireapi.Selector {
 	sorted := append([]spireapi.Selector(nil), unsorted...)

@@ -32,6 +32,8 @@ import (
 	"text/template"
 	"time"
 
+	"k8s.io/client-go/dynamic"
+
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	"k8s.io/client-go/kubernetes"
@@ -56,6 +58,7 @@ import (
 	spirev1alpha1 "github.com/spiffe/spire-controller-manager/api/v1alpha1"
 	"github.com/spiffe/spire-controller-manager/internal/controller"
 	"github.com/spiffe/spire-controller-manager/pkg/common/tlspolicy"
+	"github.com/spiffe/spire-controller-manager/pkg/k8sinput"
 	"github.com/spiffe/spire-controller-manager/pkg/metrics"
 	"github.com/spiffe/spire-controller-manager/pkg/reconciler"
 	"github.com/spiffe/spire-controller-manager/pkg/spireapi"
@@ -265,12 +268,19 @@ func parseConfig() (Config, error) {
 		retval.reconcile = *retval.ctrlConfig.Reconcile
 	}
 
+	if retval.reconcile.ClusterSPIFFEIDSets && (retval.ctrlConfig.CacheNamespace != "" || len(retval.ctrlConfig.CacheNamespaces) != 0) { //nolint:staticcheck // The deprecated scope option must still be rejected.
+		return retval, errors.New("ClusterSPIFFEIDSet does not support cacheNamespace/cacheNamespaces; use explicit input selectors and namespaceTemplate")
+	}
+
 	if retval.ctrlConfig.StaticManifestPath != nil {
 		if retval.options.LeaderElection {
 			return retval, errors.New("the Leader election is not possible with static manifests")
 		}
 		if retval.reconcile.ClusterSPIFFEIDs {
 			return retval, errors.New("ClusterSPIFFEID reconciliation is not possible with static manifests")
+		}
+		if retval.reconcile.ClusterSPIFFEIDSets {
+			return retval, errors.New("ClusterSPIFFEIDSet reconciliation is not possible with static manifests")
 		}
 	}
 
@@ -297,6 +307,7 @@ func parseConfig() (Config, error) {
 		"handle crs without class name", retval.ctrlConfig.WatchClassless,
 		"filter ClusterSPIFFEID cache by class name", retval.ctrlConfig.FilterByClassName,
 		"reconcile ClusterSPIFFEIDs", retval.reconcile.ClusterSPIFFEIDs,
+		"reconcile ClusterSPIFFEIDSets", retval.reconcile.ClusterSPIFFEIDSets,
 		"reconcile ClusterFederatedTrustDomains", retval.reconcile.ClusterFederatedTrustDomains,
 		"reconcile ClusterStaticEntries", retval.reconcile.ClusterStaticEntries,
 		"entryIDPrefix", retval.ctrlConfig.EntryIDPrefix,
@@ -435,12 +446,26 @@ func run(mainConfig Config) (err error) {
 	}
 
 	var entryReconciler reconciler.Reconciler
-	if mainConfig.reconcile.ClusterSPIFFEIDs || mainConfig.reconcile.ClusterStaticEntries {
+	var inputs k8sinput.Source
+	if mainConfig.reconcile.ClusterSPIFFEIDSets {
+		inputClient, err := dynamic.NewForConfig(mgr.GetConfig())
+		if err != nil {
+			setupLog.Error(err, "unable to create input client")
+			return err
+		}
+		inputs, err = k8sinput.New(inputClient, mgr.GetRESTMapper(), mainConfig.ctrlConfig.ClusterSPIFFEIDSet.AllowedInputKinds)
+		if err != nil {
+			setupLog.Error(err, "invalid input configuration")
+			return err
+		}
+	}
+	if mainConfig.reconcile.ClusterSPIFFEIDs || mainConfig.reconcile.ClusterSPIFFEIDSets || mainConfig.reconcile.ClusterStaticEntries {
 		entryReconciler = spireentry.Reconciler(spireentry.ReconcilerConfig{
 			TrustDomain:            trustDomain,
 			ClusterName:            mainConfig.ctrlConfig.ClusterName,
 			ClusterDomain:          mainConfig.ctrlConfig.ClusterDomain,
 			K8sClient:              mgr.GetClient(),
+			Inputs:                 inputs,
 			EntryClient:            spireClient,
 			IgnoreNamespaces:       mainConfig.ignoreNamespacesRegex,
 			GCInterval:             mainConfig.ctrlConfig.GCInterval,
@@ -474,25 +499,9 @@ func run(mainConfig Config) (err error) {
 		}
 	}
 
-	if mainConfig.reconcile.ClusterSPIFFEIDs {
-		if err = (&controller.ClusterSPIFFEIDReconciler{
-			Client:    mgr.GetClient(),
-			Scheme:    mgr.GetScheme(),
-			Triggerer: entryReconciler,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ClusterSPIFFEID")
-			return err
-		}
-	}
-	if mainConfig.reconcile.ClusterStaticEntries {
-		if err = (&controller.ClusterStaticEntryReconciler{
-			Client:    mgr.GetClient(),
-			Scheme:    mgr.GetScheme(),
-			Triggerer: entryReconciler,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ClusterStaticEntry")
-			return err
-		}
+	if err := setupEntryControllers(ctx, mgr, mainConfig, entryReconciler); err != nil {
+		setupLog.Error(err, "unable to create entry controllers")
+		return err
 	}
 	if webhookEnabled {
 		if err = (&spirev1alpha1.ClusterFederatedTrustDomain{}).SetupWebhookWithManager(mgr); err != nil {
@@ -505,27 +514,6 @@ func run(mainConfig Config) (err error) {
 		}
 	}
 	//+kubebuilder:scaffold:builder
-
-	if mainConfig.reconcile.ClusterSPIFFEIDs {
-		if err = (&controller.PodReconciler{
-			Client:           mgr.GetClient(),
-			Scheme:           mgr.GetScheme(),
-			Triggerer:        entryReconciler,
-			IgnoreNamespaces: mainConfig.ignoreNamespacesRegex,
-		}).SetupWithManager(ctx, mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "Pod")
-			return err
-		}
-		if err = (&controller.EndpointsReconciler{
-			Client:           mgr.GetClient(),
-			Scheme:           mgr.GetScheme(),
-			Triggerer:        entryReconciler,
-			IgnoreNamespaces: mainConfig.ignoreNamespacesRegex,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "Endpoints")
-			return err
-		}
-	}
 
 	if entryReconciler != nil {
 		if err = mgr.Add(manager.RunnableFunc(entryReconciler.Run)); err != nil {
@@ -562,6 +550,41 @@ func run(mainConfig Config) (err error) {
 		return err
 	}
 
+	return nil
+}
+
+func setupEntryControllers(ctx context.Context, mgr ctrl.Manager, mainConfig Config, triggerer reconciler.Triggerer) error {
+	if mainConfig.reconcile.ClusterSPIFFEIDs {
+		if err := (&controller.ClusterSPIFFEIDReconciler{
+			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Triggerer: triggerer,
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("ClusterSPIFFEID controller: %w", err)
+		}
+		if err := (&controller.PodReconciler{
+			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Triggerer: triggerer,
+			IgnoreNamespaces: mainConfig.ignoreNamespacesRegex,
+		}).SetupWithManager(ctx, mgr); err != nil {
+			return fmt.Errorf("pod controller: %w", err)
+		}
+		if err := (&controller.EndpointsReconciler{
+			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Triggerer: triggerer,
+			IgnoreNamespaces: mainConfig.ignoreNamespacesRegex,
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("endpoints controller: %w", err)
+		}
+	}
+	if mainConfig.reconcile.ClusterSPIFFEIDSets {
+		if err := (&controller.ClusterSPIFFEIDSetReconciler{Triggerer: triggerer}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("ClusterSPIFFEIDSet controller: %w", err)
+		}
+	}
+	if mainConfig.reconcile.ClusterStaticEntries {
+		if err := (&controller.ClusterStaticEntryReconciler{
+			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Triggerer: triggerer,
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("ClusterStaticEntry controller: %w", err)
+		}
+	}
 	return nil
 }
 

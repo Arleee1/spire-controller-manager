@@ -30,6 +30,25 @@ func TestMakeEntryKey(t *testing.T) {
 		require.Equal(t, makeEntryKey(a), makeEntryKey(b))
 	})
 
+	t.Run("duplicate selectors do not matter", func(t *testing.T) {
+		a := spireapi.Entry{ParentID: id1, SPIFFEID: id2, Selectors: sAABB}
+		b := a
+		b.Selectors = append(append([]spireapi.Selector{}, sAABB...), sAABB...)
+		require.Equal(t, makeEntryKey(a), makeEntryKey(b))
+	})
+
+	t.Run("selector field boundaries are unambiguous", func(t *testing.T) {
+		a := spireapi.Entry{ParentID: id1, SPIFFEID: id2, Selectors: []spireapi.Selector{{Type: "a", Value: "bc"}}}
+		b := spireapi.Entry{ParentID: id1, SPIFFEID: id2, Selectors: []spireapi.Selector{{Type: "ab", Value: "c"}}}
+		require.NotEqual(t, makeEntryKey(a), makeEntryKey(b))
+	})
+
+	t.Run("selector tuple boundaries are unambiguous", func(t *testing.T) {
+		a := spireapi.Entry{ParentID: id1, SPIFFEID: id2, Selectors: []spireapi.Selector{{Type: "a", Value: "b"}, {Type: "c", Value: "d"}}}
+		b := spireapi.Entry{ParentID: id1, SPIFFEID: id2, Selectors: []spireapi.Selector{{Type: "a", Value: "bcd"}}}
+		require.NotEqual(t, makeEntryKey(a), makeEntryKey(b))
+	})
+
 	t.Run("parent ID changes key", func(t *testing.T) {
 		a := spireapi.Entry{ID: "A", ParentID: id1, SPIFFEID: id2, Selectors: sAABB}
 		b := spireapi.Entry{ID: "B", ParentID: id2, SPIFFEID: id2, Selectors: sAABB}

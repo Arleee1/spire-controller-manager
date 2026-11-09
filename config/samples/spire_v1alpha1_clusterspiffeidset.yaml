@@ -1,0 +1,21 @@
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEIDSet
+metadata:
+  name: namespace-service-account-identities
+spec:
+  forEach:
+    - alias: ns
+      apiVersion: v1
+      kind: Namespace
+      labelSelector:
+        matchLabels:
+          identity-enabled: "true"
+    - alias: sa
+      apiVersion: v1
+      kind: ServiceAccount
+      namespaceTemplate: "{{ .Inputs.ns.metadata.name }}"
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .Inputs.ns.metadata.name }}/sa/{{ .Inputs.sa.metadata.name }}"
+  parentIDTemplate: "spiffe://{{ .TrustDomain }}/workload-parent"
+  workloadSelectorTemplates:
+    - "k8s:ns:{{ .Inputs.ns.metadata.name }}"
+    - "k8s:sa:{{ .Inputs.sa.metadata.name }}"
