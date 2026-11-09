@@ -27,6 +27,14 @@ selectors. Optional `workloadSelectorTemplates` replaces that entire selector
 set without injecting a Pod UID. Its controller still watches only namespaces
 and service accounts, not Pods or Nodes, and is disabled by default.
 
+#### ClusterSPIFFEIDSet (opt-in)
+
+The [ClusterSPIFFEIDSet](docs/clusterspiffeidset-crd.md) resource generalizes
+the iteration domain itself. It declares ordered, administrator-allowed input
+kinds and complete workload selector templates. Constants need no workload
+inputs; Namespace-only, ServiceAccount-only, correlated combinations and other
+kinds such as ConfigMap are supported without implicit Pod enumeration.
+
 #### ClusterFederatedTrustDomain
 
 The [ClusterFederatedTrustDomain](docs/clusterfederatedtrustdomain-crd.md)
@@ -64,6 +72,11 @@ changes also trigger this same shared reconciliation process. Disabling
 `reconcile.clusterSPIFFEIDs` prevents the legacy Pod and Endpoints controllers
 from starting. The service-account path does not list, get or watch Pods, Nodes
 or Endpoints. Static entries can remain enabled for SPIRE bootstrap identities.
+
+ClusterSPIFFEIDSet adds only the input informers its active rules declare.
+Unused kinds are stopped when the last referencing rule changes or disappears.
+Its declarations share the same entry store, including overlap-compatible
+migration from ClusterServiceAccountSPIFFEID.
 
 #### Federation
 

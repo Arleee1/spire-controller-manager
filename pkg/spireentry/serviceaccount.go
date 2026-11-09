@@ -52,21 +52,10 @@ func renderServiceAccountEntry(spec *spirev1alpha1.ParsedClusterServiceAccountSP
 		{Type: "k8s", Value: "sa:" + sa.Name},
 	}
 	if spec.WorkloadSelectorTemplates != nil {
-		if len(spec.WorkloadSelectorTemplates) == 0 {
-			return nil, fmt.Errorf("workloadSelectorTemplates must contain at least one template when specified")
+		selectors, err = renderWorkloadSelectors(spec.WorkloadSelectorTemplates, data)
+		if err != nil {
+			return nil, err
 		}
-		selectors = make([]spireapi.Selector, 0, len(spec.WorkloadSelectorTemplates))
-		for i, tmpl := range spec.WorkloadSelectorTemplates {
-			selector, err := renderSelector(tmpl, data)
-			if err != nil {
-				return nil, fmt.Errorf("workloadSelectorTemplates[%d]: %w", i, err)
-			}
-			if strings.TrimSpace(selector.Type) == "" || strings.TrimSpace(selector.Value) == "" {
-				return nil, fmt.Errorf("workloadSelectorTemplates[%d]: selector type and value must not be blank", i)
-			}
-			selectors = append(selectors, selector)
-		}
-		selectors = slices.Compact(sortSelectors(selectors))
 	}
 	return &spireapi.Entry{
 		SPIFFEID:  id,

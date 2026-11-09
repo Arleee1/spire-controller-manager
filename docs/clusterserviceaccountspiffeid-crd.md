@@ -167,10 +167,17 @@ still enabled, old per-Pod entries inside the same `entryIDPrefix` have no
 remaining declarations and are removed. Registrations outside that prefix are
 not part of that migration.
 
-Disabling the new flag leaves its scoped registrations untouched. Remove the
+If neither service-account nor generic ClusterSPIFFEIDSet reconciliation is
+enabled, scoped registrations remain untouched. Remove the
 rules or unenroll namespaces while it is still enabled before disabling it or
 changing the manager's cluster, class or prefix. This avoids orphaning the old
 scope.
+
+For configurable input kinds, use
+[ClusterSPIFFEIDSet](clusterspiffeidset-crd.md). It shares these scoped
+registration IDs, so both sources can overlap during a verified handoff.
+Do not disable the SA source while relying on its declarations without first
+creating equivalent generic declarations and checking the shared stored state.
 
 ## Failures and status
 

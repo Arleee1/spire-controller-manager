@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"text/template"
@@ -205,6 +206,24 @@ func renderSelector(tmpl *template.Template, data any) (spireapi.Selector, error
 		return spireapi.Selector{}, fmt.Errorf("invalid workload selector %q: %w", rendered, err)
 	}
 	return selector, nil
+}
+
+func renderWorkloadSelectors(templates []*template.Template, data any) ([]spireapi.Selector, error) {
+	if len(templates) == 0 {
+		return nil, fmt.Errorf("workloadSelectorTemplates must contain at least one template")
+	}
+	selectors := make([]spireapi.Selector, 0, len(templates))
+	for i, tmpl := range templates {
+		selector, err := renderSelector(tmpl, data)
+		if err != nil {
+			return nil, fmt.Errorf("workloadSelectorTemplates[%d]: %w", i, err)
+		}
+		if strings.TrimSpace(selector.Type) == "" || strings.TrimSpace(selector.Value) == "" {
+			return nil, fmt.Errorf("workloadSelectorTemplates[%d]: selector type and value must not be blank", i)
+		}
+		selectors = append(selectors, selector)
+	}
+	return slices.Compact(sortSelectors(selectors)), nil
 }
 
 func renderTemplate(tmpl *template.Template, data any) (string, error) {

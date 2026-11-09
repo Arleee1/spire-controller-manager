@@ -1,0 +1,19 @@
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ControllerManagerConfig
+clusterName: cilium-mtls-poc
+clusterDomain: cluster.local
+trustDomain: example.org
+spireServerSocketPath: /spire-server/api.sock
+entryIDPrefix: cilium-mtls-poc
+reconcile:
+  clusterSPIFFEIDs: false
+  clusterServiceAccountSPIFFEIDs: false
+  clusterSPIFFEIDSets: true
+  clusterStaticEntries: true
+  clusterFederatedTrustDomains: false
+clusterSPIFFEIDSet:
+  allowedInputKinds:
+    - apiVersion: v1
+      kind: Namespace
+    - apiVersion: v1
+      kind: ServiceAccount

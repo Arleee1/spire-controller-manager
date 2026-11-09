@@ -1,0 +1,21 @@
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEIDSet
+metadata:
+  name: cilium-mtls
+spec:
+  forEach:
+    - alias: ns
+      apiVersion: v1
+      kind: Namespace
+      labelSelector:
+        matchLabels:
+          io.cilium/mtls-enabled: "true"
+    - alias: sa
+      apiVersion: v1
+      kind: ServiceAccount
+      namespaceTemplate: "{{ .Inputs.ns.metadata.name }}"
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .Inputs.ns.metadata.name }}/sa/{{ .Inputs.sa.metadata.name }}"
+  parentIDTemplate: "spiffe://{{ .TrustDomain }}/ns/spire/sa/spire-agent"
+  workloadSelectorTemplates:
+    - "k8s:ns:{{ .Inputs.ns.metadata.name }}"
+    - "k8s:sa:{{ .Inputs.sa.metadata.name }}"

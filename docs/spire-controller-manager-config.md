@@ -27,6 +27,16 @@ ClusterFederatedTrustDomain controllers are enabled. The
 [ClusterServiceAccountSPIFFEID](clusterserviceaccountspiffeid-crd.md) controller
 is explicitly opt-in and disabled by default.
 
+The [ClusterSPIFFEIDSet](clusterspiffeidset-crd.md) controller is also opt-in
+through `reconcile.clusterSPIFFEIDSets`. It uses
+`clusterSPIFFEIDSet.allowedInputKinds`, an exact list of `{apiVersion, kind}`
+values, to restrict explicit inputs. The empty default allows only constant
+rules. This list does not grant RBAC or start undeclared informers; deployment
+administrators must provision exact resource permissions separately.
+Generic reconciliation rejects `cacheNamespace`/`cacheNamespaces` instead of
+silently bypassing those legacy cache restrictions; use explicit input
+selection and `namespaceTemplate` for its iteration scope.
+
 The optional `reconcile` object selects controllers. If present, omitted flags
 are false, including when the object is empty:
 
@@ -49,6 +59,12 @@ registration IDs to the trust domain, cluster name and controller class.
 The global `parentIDTemplate` still applies only to legacy Pod entries; each
 ClusterServiceAccountSPIFFEID supplies its own required parent template.
 
+ClusterSPIFFEIDSet also supplies its own parent template. Generic and
+service-account rules share scoped content IDs to permit overlap and
+declaration transfer without replacing registrations. See the generic CRD
+guide for the ordered forward/reverse migration and required controller
+overlap.
+
 See [the service-account manager configuration](../examples/service-account-controller.yaml).
 ControllerManagerConfig is loaded from a local configuration file, not from
 the historical ControllerManagerConfig Kubernetes CRD.
@@ -62,3 +78,6 @@ In this mode, validating webhooks will be ignored as its not useful without Kube
 ClusterServiceAccountSPIFFEID reconciliation is not supported in static mode
 because it requires live Namespace and ServiceAccount objects. Enabling it with
 `staticManifestPath` is a configuration error.
+
+ClusterSPIFFEIDSet is likewise unavailable in static-manifest mode, including
+constant rules; generic source management is enabled only in Kubernetes mode.

@@ -53,6 +53,7 @@ rules:
   - clusterfederatedtrustdomains/status
   - clusterserviceaccountspiffeids/status
   - clusterspiffeids/status
+  - clusterspiffeidsets/status
   - clusterstaticentries/status
   verbs:
   - get
@@ -62,6 +63,7 @@ rules:
   - spire.spiffe.io
   resources:
   - clusterserviceaccountspiffeids
+  - clusterspiffeidsets
   verbs:
   - get
   - list

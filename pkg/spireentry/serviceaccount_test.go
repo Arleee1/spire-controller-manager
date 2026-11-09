@@ -496,7 +496,7 @@ func newServiceAccountTestReconciler(t *testing.T, objects ...client.Object) (*e
 	require.NoError(t, spirev1alpha1.AddToScheme(scheme))
 	k8s := &serviceAccountTestClient{
 		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
-			WithStatusSubresource(&spirev1alpha1.ClusterServiceAccountSPIFFEID{}, &spirev1alpha1.ClusterStaticEntry{}, &spirev1alpha1.ClusterSPIFFEID{}).Build(),
+			WithStatusSubresource(&spirev1alpha1.ClusterServiceAccountSPIFFEID{}, &spirev1alpha1.ClusterSPIFFEIDSet{}, &spirev1alpha1.ClusterStaticEntry{}, &spirev1alpha1.ClusterSPIFFEID{}).Build(),
 		t: t, lists: map[string]int{}, gets: map[string]int{}, listFailures: map[string]error{},
 	}
 	store := &serviceAccountEntryClient{entries: map[string]spireapi.Entry{}}

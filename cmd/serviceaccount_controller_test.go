@@ -36,6 +36,10 @@ func TestServiceAccountConfigOptIn(t *testing.T) {
 		{name: "explicit opt in", extra: "reconcile:\n  clusterSPIFFEIDs: false\n  clusterServiceAccountSPIFFEIDs: true\n  clusterStaticEntries: true\n",
 			want: spirev1alpha1.ReconcileConfig{ClusterServiceAccountSPIFFEIDs: true, ClusterStaticEntries: true}},
 		{name: "empty disables all", extra: "reconcile: {}\n"},
+		{name: "generic opt in", extra: "reconcile:\n  clusterSPIFFEIDSets: true\n  clusterStaticEntries: true\nclusterSPIFFEIDSet:\n  allowedInputKinds:\n    - apiVersion: v1\n      kind: Namespace\n",
+			want: spirev1alpha1.ReconcileConfig{ClusterSPIFFEIDSets: true, ClusterStaticEntries: true}},
+		{name: "generic static mode rejected", extra: "staticManifestPath: unused\nreconcile:\n  clusterSPIFFEIDSets: true\n", err: "ClusterSPIFFEIDSet reconciliation is not possible with static manifests"},
+		{name: "generic cache scope rejected", extra: "cacheNamespace: restricted\nreconcile:\n  clusterSPIFFEIDSets: true\n", err: "ClusterSPIFFEIDSet does not support cacheNamespace/cacheNamespaces; use explicit input selectors and namespaceTemplate"},
 		{name: "static mode rejected", extra: "staticManifestPath: unused\nreconcile:\n  clusterServiceAccountSPIFFEIDs: true\n", err: "ClusterServiceAccountSPIFFEID reconciliation is not possible with static manifests"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -53,6 +57,9 @@ func TestServiceAccountConfigOptIn(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Equal(t, tt.want, config.reconcile)
+			if tt.name == "generic opt in" {
+				require.Equal(t, []spirev1alpha1.SPIFFEIDSetKind{{APIVersion: "v1", Kind: "Namespace"}}, config.ctrlConfig.ClusterSPIFFEIDSet.AllowedInputKinds)
+			}
 		})
 	}
 }

@@ -93,3 +93,27 @@ func (by *ClusterServiceAccountSPIFFEID) setCondition(status metav1.ConditionSta
 	}
 	meta.SetStatusCondition(&by.NextStatus.Conditions, condition)
 }
+
+type ClusterSPIFFEIDSet struct {
+	spirev1alpha1.ClusterSPIFFEIDSet
+	NextStatus spirev1alpha1.ClusterSPIFFEIDSetStatus
+}
+
+func (by *ClusterSPIFFEIDSet) IncrementEntriesToSet() { by.NextStatus.Stats.EntriesToSet++ }
+
+func (by *ClusterSPIFFEIDSet) IncrementEntriesMasked() { by.NextStatus.Stats.EntriesMasked++ }
+
+func (by *ClusterSPIFFEIDSet) IncrementEntrySuccess() {}
+
+func (by *ClusterSPIFFEIDSet) IncrementEntryFailures() {
+	by.NextStatus.Stats.EntryFailures++
+	by.setCondition(metav1.ConditionFalse, "SPIREAPIError", "Failed to create or update SPIRE entries; see controller logs")
+}
+
+func (by *ClusterSPIFFEIDSet) setCondition(status metav1.ConditionStatus, reason, message string) {
+	condition := metav1.Condition{Type: "Ready", Status: status, ObservedGeneration: by.Generation, Reason: reason, Message: message}
+	if previous := meta.FindStatusCondition(by.Status.Conditions, "Ready"); previous != nil && previous.Status == status {
+		condition.LastTransitionTime = previous.LastTransitionTime
+	}
+	meta.SetStatusCondition(&by.NextStatus.Conditions, condition)
+}

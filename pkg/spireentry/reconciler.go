@@ -44,6 +44,7 @@ import (
 
 	spirev1alpha1 "github.com/spiffe/spire-controller-manager/api/v1alpha1"
 	"github.com/spiffe/spire-controller-manager/pkg/k8sapi"
+	"github.com/spiffe/spire-controller-manager/pkg/k8sinput"
 	"github.com/spiffe/spire-controller-manager/pkg/metrics"
 	"github.com/spiffe/spire-controller-manager/pkg/namespace"
 	"github.com/spiffe/spire-controller-manager/pkg/reconciler"
@@ -68,6 +69,7 @@ type ReconcilerConfig struct {
 	ClusterDomain        string
 	EntryClient          spireapi.EntryClient
 	K8sClient            client.Client
+	Inputs               k8sinput.Source
 	IgnoreNamespaces     []*regexp.Regexp
 	AutoPopulateDNSNames bool
 	ClassName            string
@@ -89,11 +91,26 @@ func Reconciler(config ReconcilerConfig) reconciler.Reconciler {
 		promCounter:        metrics.PromCounters,
 		staticManifestPath: config.StaticManifestPath,
 	}
-	return reconciler.New(reconciler.Config{
+	runner := reconciler.New(reconciler.Config{
 		Kind:       "entry",
 		Reconcile:  r.reconcile,
 		GCInterval: config.GCInterval,
 	})
+	if config.Inputs != nil {
+		config.Inputs.SetTrigger(runner.Trigger)
+		return &inputManagedReconciler{Reconciler: runner, inputs: config.Inputs}
+	}
+	return runner
+}
+
+type inputManagedReconciler struct {
+	reconciler.Reconciler
+	inputs k8sinput.Source
+}
+
+func (r *inputManagedReconciler) Run(ctx context.Context) error {
+	defer r.inputs.Close()
+	return r.Reconciler.Run(ctx)
 }
 
 type entryReconciler struct {
@@ -108,12 +125,22 @@ type entryReconciler struct {
 func (r *entryReconciler) reconcile(ctx context.Context) {
 	log := log.FromContext(ctx)
 
+	var identitySets []*ClusterSPIFFEIDSet
+	if r.config.Reconcile.ClusterSPIFFEIDSets {
+		var err error
+		identitySets, err = r.listClusterSPIFFEIDSets(ctx)
+		if err != nil {
+			log.Error(err, "Failed to list ClusterSPIFFEIDSets")
+			return
+		}
+	}
 	var serviceAccountSPIFFEIDs []*ClusterServiceAccountSPIFFEID
 	if r.config.Reconcile.ClusterServiceAccountSPIFFEIDs {
 		var err error
 		serviceAccountSPIFFEIDs, err = r.listClusterServiceAccountSPIFFEIDs(ctx)
 		if err != nil {
 			log.Error(err, "Failed to list ClusterServiceAccountSPIFFEIDs")
+			r.failIdentitySets(ctx, identitySets, "KubernetesAPIError", err)
 			return
 		}
 	}
@@ -128,6 +155,7 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 	if err != nil {
 		log.Error(err, "Failed to list SPIRE entries")
 		r.failServiceAccountReconciliation(ctx, serviceAccountSPIFFEIDs, "SPIREAPIError", err)
+		r.failIdentitySets(ctx, identitySets, "SPIREAPIError", err)
 		return
 	}
 
@@ -144,6 +172,7 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 		if err != nil {
 			log.Error(err, "Failed to list ClusterStaticEntries")
 			r.failServiceAccountReconciliation(ctx, serviceAccountSPIFFEIDs, "KubernetesAPIError", err)
+			r.failIdentitySets(ctx, identitySets, "KubernetesAPIError", err)
 			return
 		}
 		r.addClusterStaticEntryEntriesState(ctx, state, clusterStaticEntries)
@@ -156,6 +185,7 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 		if err != nil {
 			log.Error(err, "Failed to list ClusterSPIFFEIDs")
 			r.failServiceAccountReconciliation(ctx, serviceAccountSPIFFEIDs, "KubernetesAPIError", err)
+			r.failIdentitySets(ctx, identitySets, "KubernetesAPIError", err)
 			return
 		}
 		r.addClusterSPIFFEIDEntriesState(ctx, state, clusterSPIFFEIDs)
@@ -165,7 +195,17 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 		// Incomplete Kubernetes snapshots must not be interpreted as deletions.
 		log.Error(err, "Failed to collect service-account entries")
 		r.failServiceAccountReconciliation(ctx, serviceAccountSPIFFEIDs, "KubernetesAPIError", err)
+		r.failIdentitySets(ctx, identitySets, "KubernetesAPIError", err)
 		return
+	}
+
+	if r.config.Reconcile.ClusterSPIFFEIDSets {
+		if err := r.addClusterSPIFFEIDSetEntriesState(ctx, state, identitySets); err != nil {
+			log.Error(err, "Failed to collect identity-set inputs")
+			r.failIdentitySets(ctx, identitySets, "InputUnavailable", err)
+			r.failServiceAccountReconciliation(ctx, serviceAccountSPIFFEIDs, "KubernetesAPIError", err)
+			return
+		}
 	}
 
 	var toDelete []spireapi.Entry
@@ -214,6 +254,9 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 			for _, by := range serviceAccountSPIFFEIDs {
 				by.setCondition(metav1.ConditionFalse, "SPIREAPIError", err.Error())
 			}
+			for _, by := range identitySets {
+				by.setCondition(metav1.ConditionFalse, "SPIREAPIError", err.Error())
+			}
 		}
 	}
 	if len(toCreate) > 0 {
@@ -224,6 +267,7 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 	}
 
 	r.updateServiceAccountStatuses(ctx, serviceAccountSPIFFEIDs)
+	r.updateIdentitySetStatuses(ctx, identitySets)
 
 	// Update the ClusterStaticEntry statuses
 	for _, clusterStaticEntry := range clusterStaticEntries {
@@ -298,9 +342,9 @@ func (r *entryReconciler) recalculateUnsupportFields(ctx context.Context, log lo
 
 func (r *entryReconciler) shouldProcessOrDeleteEntryID(entry spireapi.Entry) (bool, bool) {
 	if strings.HasPrefix(entry.ID, r.config.EntryIDPrefix+serviceAccountEntryIDMarker) {
-		return r.config.Reconcile.ClusterServiceAccountSPIFFEIDs && strings.HasPrefix(entry.ID, r.serviceAccountEntryIDPrefix()), false
+		return (r.config.Reconcile.ClusterServiceAccountSPIFFEIDs || r.config.Reconcile.ClusterSPIFFEIDSets) && strings.HasPrefix(entry.ID, r.serviceAccountEntryIDPrefix()), false
 	}
-	if r.config.Reconcile.ClusterServiceAccountSPIFFEIDs && !r.config.Reconcile.ClusterSPIFFEIDs && !r.config.Reconcile.ClusterStaticEntries {
+	if (r.config.Reconcile.ClusterServiceAccountSPIFFEIDs || r.config.Reconcile.ClusterSPIFFEIDSets) && !r.config.Reconcile.ClusterSPIFFEIDs && !r.config.Reconcile.ClusterStaticEntries {
 		return false, false
 	}
 	if r.config.EntryIDPrefix == "" {
